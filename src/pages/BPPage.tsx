@@ -1,12 +1,125 @@
-import { useState, useMemo, useRef } from 'react';
+import { useReducer, useMemo, useState } from 'react';
 import { heroes, getHeroById, bpPositions, tierColors, type Hero } from '../data/heroes';
-
-function tierToClass(tier: string) {
-  return 'tier-' + tier.toLowerCase().replace('.', '_');
-}
 
 type Side = 'blue' | 'red';
 type Phase = 'ban' | 'pick' | 'done';
+
+// Pick顺序：蓝1→红2→蓝2→红2→蓝2→红1
+const PICK_STEPS: { side: Side; count: number }[] = [
+  { side: 'blue', count: 1 },
+  { side: 'red',  count: 2 },
+  { side: 'blue', count: 2 },
+  { side: 'red',  count: 2 },
+  { side: 'blue', count: 2 },
+  { side: 'red',  count: 1 },
+];
+
+const MAX_PICKS = 5;
+const MAX_BANS = 5;
+
+type State = {
+  phase: Phase;
+  bans: { blue: string[]; red: string[] };
+  picks: { blue: string[]; red: string[] };
+  pickStep: number;
+  banTurn: Side;
+};
+
+type Action =
+  | { type: 'BAN'; heroId: string }
+  | { type: 'PICK'; heroId: string }
+  | { type: 'UNDO' }
+  | { type: 'RESET' };
+
+function reducer(state: State, action: Action): State {
+  switch (action.type) {
+    case 'RESET':
+      return { phase: 'ban', bans: { blue: [], red: [] }, picks: { blue: [], red: [] }, pickStep: 0, banTurn: 'blue' };
+
+    case 'BAN': {
+      if (state.phase !== 'ban') return state;
+      const side = state.banTurn;
+      if (state.bans[side].length >= MAX_BANS) return state;
+      const nextBans = { ...state.bans, [side]: [...state.bans[side], action.heroId] };
+      const done = nextBans.blue.length === MAX_BANS && nextBans.red.length === MAX_BANS;
+      return {
+        ...state,
+        bans: nextBans,
+        phase: done ? 'pick' : state.phase,
+        pickStep: done ? 0 : state.pickStep,
+        banTurn: done ? 'blue' : (side === 'blue' ? 'red' : 'blue'),
+      };
+    }
+
+    case 'PICK': {
+      if (state.phase !== 'pick') return state;
+      const step = PICK_STEPS[state.pickStep];
+      const side = step.side;
+      // 每方最多5个
+      if (state.picks[side].length >= MAX_PICKS) return state;
+      // 这一步骤已选够了（只限本步骤数量，不是阵营总数）
+      if (state.picks[side].length >= step.count) return state;
+      const nextPicks = { ...state.picks, [side]: [...state.picks[side], action.heroId] };
+      // 这一步骤还没选够，留在这一步
+      if (nextPicks[side].length < step.count) {
+        return { ...state, picks: nextPicks };
+      }
+      // 选够了，进入下一步或结束
+      const nextStep = state.pickStep + 1;
+      if (nextStep >= PICK_STEPS.length) {
+        return { ...state, picks: nextPicks, phase: 'done' };
+      }
+      return { ...state, picks: nextPicks, pickStep: nextStep };
+    }
+
+    case 'UNDO': {
+      if (state.phase === 'done') {
+        return { ...state, phase: 'pick' };
+      }
+      if (state.phase === 'ban') {
+        const prevSide = state.banTurn === 'blue' ? 'red' : 'blue';
+        if (state.bans[prevSide].length === 0) return state;
+        return {
+          ...state,
+          bans: { ...state.bans, [prevSide]: state.bans[prevSide].slice(0, -1) },
+          banTurn: prevSide,
+        };
+      }
+      // pick阶段：撤销对方最近的操作（找上一个有选的步骤）
+      // 找上一个有选的步骤
+      let idx = state.pickStep;
+      while (idx >= 0) {
+        const s = PICK_STEPS[idx];
+        if (state.picks[s.side].length > 0) {
+          const newPicks = { ...state.picks, [s.side]: state.picks[s.side].slice(0, -1) };
+          // 如果这一步还没选完，留在同一步
+          if (newPicks[s.side].length < s.count) {
+            return { ...state, picks: newPicks };
+          }
+          // 选够了则退回上一步
+          return { ...state, picks: newPicks, pickStep: Math.max(0, idx - 1) };
+        }
+        idx--;
+      }
+      // pick全空则退回ban阶段
+      if (idx < 0) {
+        return { ...state, phase: 'ban', pickStep: 0 };
+      }
+      return state;
+    }
+
+    default:
+      return state;
+  }
+}
+
+const initState: State = {
+  phase: 'ban',
+  bans: { blue: [], red: [] },
+  picks: { blue: [], red: [] },
+  pickStep: 0,
+  banTurn: 'blue',
+};
 
 const PHASES: { key: Phase; label: string }[] = [
   { key: 'ban', label: '禁用阶段' },
@@ -14,41 +127,22 @@ const PHASES: { key: Phase; label: string }[] = [
   { key: 'done', label: '阵容分析' },
 ];
 
+function tierToClass(tier: string) {
+  return 'tier-' + tier.toLowerCase().replace('.', '_');
+}
+
 export default function BPPage() {
-  const [phase, setPhase] = useState<Phase>('ban');
-  const [bans, setBans] = useState<{ blue: string[]; red: string[] }>({ blue: [], red: [] });
-  const [picks, setPicks] = useState<{ blue: string[]; red: string[] }>({ blue: [], red: [] });
+  const [state, dispatch] = useReducer(reducer, initState);
   const [search, setSearch] = useState('');
   const [filterPos, setFilterPos] = useState<string>('all');
-  // Pick步骤顺序：蓝1→红2→蓝2→红2→蓝2→红1
-  const [pickStep, setPickStep] = useState(0);
-  // Ban阶段交替：当前操作方
-  const [banTurn, setBanTurn] = useState<Side>('blue');
 
-  // 每个步骤选几个英雄
-  const PICK_STEPS: { side: Side; count: number; label: string }[] = [
-    { side: 'blue', count: 1, label: '蓝方 选1个' },
-    { side: 'red',  count: 2, label: '红方 选2个' },
-    { side: 'blue', count: 2, label: '蓝方 选2个' },
-    { side: 'red',  count: 2, label: '红方 选2个' },
-    { side: 'blue', count: 2, label: '蓝方 选2个' },
-    { side: 'red',  count: 1, label: '红方 选1个' },
-  ];
+  const { phase, bans, picks, pickStep, banTurn } = state;
 
-  // 每方最多选5个（所有pick步骤加起来）
-  const MAX_PICKS = 5;
-  // 防止同帧重复点击
-  const isSelecting = useRef(false);
-
-  const activePick = phase === 'pick' ? PICK_STEPS[pickStep].side : banTurn;
+  const activePick: Side = phase === 'pick' ? PICK_STEPS[pickStep].side : banTurn;
 
   const takenIds = useMemo(() => {
     const picksTaken = [...picks.blue, ...picks.red];
-    // Ban阶段：排除己方已ban（禁止同阵营重复ban）+ 排除双方已pick
-    if (phase === 'ban') {
-      return [...picksTaken, ...bans[activePick]];
-    }
-    // Pick阶段：排除所有已ban和已pick的
+    if (phase === 'ban') return [...picksTaken, ...bans[activePick]];
     return [...picksTaken, ...bans.blue, ...bans.red];
   }, [bans, picks, phase, activePick]);
 
@@ -61,125 +155,31 @@ export default function BPPage() {
     });
   }, [takenIds, filterPos, search]);
 
-  const handleSelectHero = (hero: Hero) => {
-    if (phase === 'done') return;
-    if (isSelecting.current) return;
-    isSelecting.current = true;
-    // 执行后重置（try/finally确保在React状态更新+渲染后释放）
-    try {
-    if (phase === 'ban') {
-      const side = banTurn;
-      if (bans[side].length >= 5) return;
-      const nextBans = { ...bans, [side]: [...bans[side], hero.id] };
-      const nb = nextBans.blue.length;
-      const nr = nextBans.red.length;
-      if (nb === 5 && nr === 5) {
-        setBans(nextBans);
-        setPhase('pick');
-        setPickStep(0);
-      } else {
-        setBans(nextBans);
-        setBanTurn(side === 'blue' ? 'red' : 'blue');
-      }
-    } else if (phase === 'pick') {
-      const step = PICK_STEPS[pickStep];
-      const side = step.side;
-      setPicks(prev => {
-        // 每方最多5个（阵营总限额）
-        if (prev[side].length >= MAX_PICKS) return prev;
-        // 这一步骤已选够了吗（这一步要选 count 个）
-        if (prev[side].length >= step.count) return prev;
-        const nextSidePicks = [...prev[side], hero.id];
-        const newPicks = { ...prev, [side]: nextSidePicks };
-        // 这一步骤还没选够，留在这一步
-        if (nextSidePicks.length < step.count) return newPicks;
-        // 选够了，进入下一步或结束
-        const nextStep = pickStep + 1;
-        if (nextStep >= PICK_STEPS.length) {
-          setPhase('done');
-        } else {
-          setPickStep(nextStep);
-        }
-        return newPicks;
-      });
-    }
-    } finally {
-      // 状态更新触发渲染后，重置锁，允许下一次点击
-      Promise.resolve().then(() => { isSelecting.current = false; });
-    }
-  };
-
-  // 返回上一步：撤销对方刚做的操作
-  const undoLast = () => {
-    if (phase === 'done') {
-      setPhase('pick');
-      return;
-    }
-
-    // activePick 是当前操作方，上一步是对方做的
-    const prevSide: Side = activePick === 'blue' ? 'red' : 'blue';
-
-    if (phase === 'ban') {
-      if (bans[prevSide].length === 0) return;
-      setBans(prev => ({ ...prev, [prevSide]: prev[prevSide].slice(0, -1) }));
-      setBanTurn(prevSide); // 对方重做
-    } else if (phase === 'pick') {
-      // 找上一个有选的步骤
-      let stepIdx = pickStep;
-      while (stepIdx >= 0) {
-        const s = PICK_STEPS[stepIdx];
-        if (picks[s.side].length > 0) {
-          setPicks(prev => ({ ...prev, [s.side]: prev[s.side].slice(0, -1) }));
-          // 如果这一步还没选完，留在同一步
-          if (picks[s.side].length > 0 && picks[s.side].length < s.count) {
-            return;
-          }
-          // 选够了则退回上一步
-          setPickStep(Math.max(0, stepIdx - 1));
-          return;
-        }
-        stepIdx--;
-      }
-      // pick全空则退回ban阶段
-      if (stepIdx < 0) setPhase('ban');
-    }
-  };
-
-  const reset = () => {
-    setPhase('ban');
-    setBans({ blue: [], red: [] });
-    setPicks({ blue: [], red: [] });
-    setPickStep(0);
-    setBanTurn('blue');
-    setSearch('');
-    setFilterPos('all');
-  };
+  // 当前步骤信息
+  const currentStep = phase === 'pick' ? PICK_STEPS[pickStep] : null;
+  const stepLabel = currentStep
+    ? `${currentStep.side === 'blue' ? '🔵蓝方' : '🔴红方'} 选${currentStep.count}个`
+    : phase === 'ban'
+    ? `${activePick === 'blue' ? '🔵蓝方' : '🔴红方'} 禁用`
+    : '完成';
 
   const analysis = useMemo(() => {
     if (picks.blue.length === 0 && picks.red.length === 0) return null;
-
     const calcScore = (sidePicks: string[]) => {
       let score = 0;
       let synergyCount = 0;
       let weaknessCount = 0;
       const heroObjs = sidePicks.map(id => getHeroById(id)).filter(Boolean) as Hero[];
-
       heroObjs.forEach(h => {
         score += h.tierScore;
-        // 检查是否被敌方克制
         sidePicks.forEach(pickId => {
           const enemy = getHeroById(pickId);
-          if (enemy?.counters.includes(h.id)) {
-            weaknessCount++;
-          }
+          if (enemy?.counters.includes(h.id)) weaknessCount++;
         });
-        // 检查配合
         h.synergies.forEach(synId => {
           if (sidePicks.includes(synId)) synergyCount++;
         });
       });
-
-      // 检查阵容完整性
       const roles = new Set<string>();
       heroObjs.forEach(h => {
         if (h.position.includes('warrior') || h.position.includes('tank')) roles.add('tank');
@@ -188,7 +188,6 @@ export default function BPPage() {
         if (h.position.includes('assassin')) roles.add('assassin');
         if (h.position.includes('support')) roles.add('support');
       });
-
       const completeness = Math.min(roles.size / 4 * 30, 30);
       return {
         total: Math.round(score + synergyCount * 3 - weaknessCount * 2 + completeness),
@@ -197,11 +196,7 @@ export default function BPPage() {
         completeness: Math.round(completeness),
       };
     };
-
-    const blue = calcScore(picks.blue);
-    const red = calcScore(picks.red);
-
-    return { blue, red };
+    return { blue: calcScore(picks.blue), red: calcScore(picks.red) };
   }, [picks]);
 
   return (
@@ -223,10 +218,10 @@ export default function BPPage() {
 
       {/* 操作按钮 */}
       <div className="bp-toolbar">
-        <button className="undo-btn" onClick={undoLast} title="撤销上一步">
+        <button className="undo-btn" onClick={() => dispatch({ type: 'UNDO' })} title="撤销上一步">
           ↩ 返回上一步
         </button>
-        <button className="reset-btn" onClick={reset} title="重新开始">
+        <button className="reset-btn" onClick={() => dispatch({ type: 'RESET' })} title="重新开始">
           🔄 重新开始
         </button>
       </div>
@@ -239,7 +234,6 @@ export default function BPPage() {
             <span className="team-name">🔵 蓝方</span>
             {analysis && <span className="team-score">{analysis.blue.total}分</span>}
           </div>
-
           {/* Ban区 */}
           <div className="ban-zone">
             <span className="zone-label">禁用</span>
@@ -255,7 +249,6 @@ export default function BPPage() {
               ))}
             </div>
           </div>
-
           {/* Pick区 */}
           <div className="pick-zone">
             <div className="pick-slots">
@@ -296,7 +289,6 @@ export default function BPPage() {
             <span className="team-name">🔴 红方</span>
             {analysis && <span className="team-score">{analysis.red.total}分</span>}
           </div>
-
           {/* Ban区 */}
           <div className="ban-zone">
             <span className="zone-label">禁用</span>
@@ -312,7 +304,6 @@ export default function BPPage() {
               ))}
             </div>
           </div>
-
           {/* Pick区 */}
           <div className="pick-zone">
             <div className="pick-slots">
@@ -336,12 +327,19 @@ export default function BPPage() {
       {phase !== 'done' && (
         <div className="turn-indicator">
           <span className={`turn-badge ${activePick}`}>
-            {activePick === 'blue' ? '🔵' : '🔴'} {activePick === 'blue' ? '蓝方' : '红方'}
-            {phase === 'ban' ? ' 禁用' : ` 选${PICK_STEPS[pickStep].count}个`}
+            {stepLabel}
           </span>
           <span className="turn-tip">
-            {phase === 'ban' && `禁用 · 蓝方 ${bans.blue.length}/5 · 红方 ${bans.red.length}/5`}
-            {phase === 'pick' && `选择 · 蓝方 ${picks.blue.length}/5 · 红方 ${picks.red.length}/5 · 第${pickStep + 1}/${PICK_STEPS.length}轮`}
+            {phase === 'ban' && `禁用 · 蓝方 ${bans.blue.length}/${MAX_BANS} · 红方 ${bans.red.length}/${MAX_BANS}`}
+            {phase === 'pick' && currentStep && (
+              <>
+                第{pickStep + 1}/{PICK_STEPS.length}步 ·
+                蓝方 {picks.blue.length}/{MAX_PICKS} ·
+                红方 {picks.red.length}/{MAX_PICKS}
+                {picks[activePick].length < currentStep.count &&
+                  ` · 还需选${currentStep.count - picks[activePick].length}个`}
+              </>
+            )}
           </span>
         </div>
       )}
@@ -353,22 +351,10 @@ export default function BPPage() {
               <h3>🔵 蓝方分析</h3>
               {analysis && (
                 <div className="analysis-detail">
-                  <div className="stat-row">
-                    <span>阵容评分</span>
-                    <span className="val">{analysis.blue.total}</span>
-                  </div>
-                  <div className="stat-row">
-                    <span>阵容完整度</span>
-                    <span className="val">{analysis.blue.completeness}/30</span>
-                  </div>
-                  <div className="stat-row">
-                    <span>配合加成</span>
-                    <span className="val good">+{analysis.blue.synergyCount * 3}</span>
-                  </div>
-                  <div className="stat-row">
-                    <span>被克制风险</span>
-                    <span className="val bad">-{analysis.blue.weaknessCount * 2}</span>
-                  </div>
+                  <div className="stat-row"><span>阵容评分</span><span className="val">{analysis.blue.total}</span></div>
+                  <div className="stat-row"><span>阵容完整度</span><span className="val">{analysis.blue.completeness}/30</span></div>
+                  <div className="stat-row"><span>配合加成</span><span className="val good">+{analysis.blue.synergyCount * 3}</span></div>
+                  <div className="stat-row"><span>被克制风险</span><span className="val bad">-{analysis.blue.weaknessCount * 2}</span></div>
                 </div>
               )}
               {picks.blue.map(id => <HeroAnalysisCard key={id} heroId={id} side="blue" enemyPicks={[...picks.red]} allPicks={picks.blue} />)}
@@ -377,22 +363,10 @@ export default function BPPage() {
               <h3>🔴 红方分析</h3>
               {analysis && (
                 <div className="analysis-detail">
-                  <div className="stat-row">
-                    <span>阵容评分</span>
-                    <span className="val">{analysis.red.total}</span>
-                  </div>
-                  <div className="stat-row">
-                    <span>阵容完整度</span>
-                    <span className="val">{analysis.red.completeness}/30</span>
-                  </div>
-                  <div className="stat-row">
-                    <span>配合加成</span>
-                    <span className="val good">+{analysis.red.synergyCount * 3}</span>
-                  </div>
-                  <div className="stat-row">
-                    <span>被克制风险</span>
-                    <span className="val bad">-{analysis.red.weaknessCount * 2}</span>
-                  </div>
+                  <div className="stat-row"><span>阵容评分</span><span className="val">{analysis.red.total}</span></div>
+                  <div className="stat-row"><span>阵容完整度</span><span className="val">{analysis.red.completeness}/30</span></div>
+                  <div className="stat-row"><span>配合加成</span><span className="val good">+{analysis.red.synergyCount * 3}</span></div>
+                  <div className="stat-row"><span>被克制风险</span><span className="val bad">-{analysis.red.weaknessCount * 2}</span></div>
                 </div>
               )}
               {picks.red.map(id => <HeroAnalysisCard key={id} heroId={id} side="red" enemyPicks={[...picks.blue]} allPicks={picks.red} />)}
@@ -420,13 +394,12 @@ export default function BPPage() {
               <button className={`filter-btn ${filterPos === 'support' ? 'active' : ''}`} onClick={() => setFilterPos('support')}>辅助</button>
             </div>
           </div>
-
           <div className="hero-grid">
             {filteredHeroes.map(hero => (
               <div
                 key={hero.id}
                 className={`hero-card ${tierToClass(hero.tier)}`}
-                onClick={() => handleSelectHero(hero)}
+                onClick={() => dispatch({ type: phase === 'ban' ? 'BAN' : 'PICK', heroId: hero.id })}
                 title={`${hero.tier} · ${hero.reason}`}
               >
                 <div className="hero-avatar">{hero.name[0]}</div>
@@ -437,9 +410,7 @@ export default function BPPage() {
                 <div className="hero-pos">{hero.position.map(p => p[0].toUpperCase()).join('/')}</div>
               </div>
             ))}
-            {filteredHeroes.length === 0 && (
-              <div className="no-result">没有符合条件的英雄</div>
-            )}
+            {filteredHeroes.length === 0 && <div className="no-result">没有符合条件的英雄</div>}
           </div>
         </div>
       )}
@@ -447,7 +418,6 @@ export default function BPPage() {
   );
 }
 
-// 英雄迷你卡片
 function HeroMini({ id, isBan = false }: { id: string; isBan?: boolean }) {
   const hero = getHeroById(id);
   if (!hero) return null;
@@ -459,15 +429,12 @@ function HeroMini({ id, isBan = false }: { id: string; isBan?: boolean }) {
   );
 }
 
-// 英雄分析卡片
 function HeroAnalysisCard({ heroId, enemyPicks, allPicks }: { heroId: string; side?: 'blue' | 'red'; enemyPicks: string[]; allPicks: string[] }) {
   const hero = getHeroById(heroId);
   if (!hero) return null;
-
   const counters = enemyPicks.filter(eId => hero.counters.includes(eId));
   const counteredBy = enemyPicks.filter(eId => hero.counteredBy.includes(eId));
   const synergies = allPicks.filter(aId => hero.synergies.includes(aId) && aId !== heroId);
-
   return (
     <div className="analysis-hero-card">
       <div className="ah-name">{hero.name} <span style={{ color: tierColors[hero.tier] }}>{hero.tier}</span></div>
@@ -477,19 +444,13 @@ function HeroAnalysisCard({ heroId, enemyPicks, allPicks }: { heroId: string; si
       </div>
       <div className="ah-reason">{hero.reason}</div>
       {counters.length > 0 && (
-        <div className="ah-badges good">
-          <span>✅ 克制：{counters.map(id => getHeroById(id)?.name).filter(Boolean).join('、')}</span>
-        </div>
+        <div className="ah-counters">✅ 克制：{counters.map(id => getHeroById(id)?.name).join('、')}</div>
       )}
       {counteredBy.length > 0 && (
-        <div className="ah-badges bad">
-          <span>⚠️ 被克制：{counteredBy.map(id => getHeroById(id)?.name).filter(Boolean).join('、')}</span>
-        </div>
+        <div className="ah-countered">⚠️ 被克：{counteredBy.map(id => getHeroById(id)?.name).join('、')}</div>
       )}
       {synergies.length > 0 && (
-        <div className="ah-badges syn">
-          <span>🤝 配合：{synergies.map(id => getHeroById(id)?.name).filter(Boolean).join('、')}</span>
-        </div>
+        <div className="ah-synergy">🤝 配合：{synergies.map(id => getHeroById(id)?.name).join('、')}</div>
       )}
     </div>
   );
