@@ -1,1 +1,1 @@
-update BP flow: single ban round (5 each) + single pick round (blue1 red2 blue2 red2 blue2 red1)
+add undo and restart buttons

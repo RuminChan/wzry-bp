@@ -81,6 +81,27 @@ export default function BPPage() {
   };
 
   // Pick顺序：蓝1→红2→蓝2→红2→蓝2→红1（双方各5）
+  // 返回上一步：撤销对方刚做的操作
+  const undoLast = () => {
+    if (phase === 'done') {
+      setPhase('pick');
+      return;
+    }
+
+    // activePick 是当前操作方，上一步是对方做的
+    const prevSide: Side = activePick === 'blue' ? 'red' : 'blue';
+
+    if (phase === 'ban') {
+      if (bans[prevSide].length === 0) return; // 没有可撤销的
+      setBans(prev => ({ ...prev, [prevSide]: prev[prevSide].slice(0, -1) }));
+      setActivePick(prevSide); // 对方重做
+    } else if (phase === 'pick') {
+      if (picks[prevSide].length === 0) return;
+      setPicks(prev => ({ ...prev, [prevSide]: prev[prevSide].slice(0, -1) }));
+      setActivePick(prevSide);
+    }
+  };
+
   const reset = () => {
     setPhase('ban');
     setBans({ blue: [], red: [] });
@@ -154,6 +175,16 @@ export default function BPPage() {
             <span>{p.label}</span>
           </div>
         ))}
+      </div>
+
+      {/* 操作按钮 */}
+      <div className="bp-toolbar">
+        <button className="undo-btn" onClick={undoLast} title="撤销上一步">
+          ↩ 返回上一步
+        </button>
+        <button className="reset-btn" onClick={reset} title="重新开始">
+          🔄 重新开始
+        </button>
       </div>
 
       {/* 阵容面板 */}
@@ -344,7 +375,6 @@ export default function BPPage() {
               <button className={`filter-btn ${filterPos === 'marksman' ? 'active' : ''}`} onClick={() => setFilterPos('marksman')}>射手</button>
               <button className={`filter-btn ${filterPos === 'support' ? 'active' : ''}`} onClick={() => setFilterPos('support')}>辅助</button>
             </div>
-            <button className="reset-btn" onClick={reset}>🔄 重置</button>
           </div>
 
           <div className="hero-grid">

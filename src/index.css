@@ -1023,3 +1023,35 @@ button {
     font-size: 11px;
   }
 }
+
+/* BP操作按钮栏 */
+.bp-toolbar {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: #1a1a2e;
+  border-bottom: 1px solid #333;
+}
+
+.undo-btn,
+.bp-toolbar .reset-btn {
+  padding: 6px 16px;
+  border-radius: 8px;
+  border: 1px solid #555;
+  background: #2a2a4a;
+  color: #e0e0e0;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.undo-btn:hover,
+.bp-toolbar .reset-btn:hover {
+  background: #3a3a6a;
+}
+
+.undo-btn:active,
+.bp-toolbar .reset-btn:active {
+  transform: scale(0.97);
+}
