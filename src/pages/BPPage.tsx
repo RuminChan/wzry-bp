@@ -7,8 +7,9 @@ type Phase = 'ban' | 'pick' | 'done';
 const MAX_BANS = 5;
 const MAX_PICKS = 5;
 
-const BLUE_STEPS = [{ count: 1 }, { count: 2 }, { count: 2 }];
-const RED_STEPS  = [{ count: 2 }, { count: 2 }, { count: 1 }];
+// 每步选几个
+const BLUE_STEPS = [1, 2, 2];
+const RED_STEPS  = [2, 2, 1];
 
 // 全局流程编排：蓝1 → 红2 → 蓝2 → 红2 → 蓝2 → 红1
 type OrchItem =
@@ -27,14 +28,12 @@ const ORCH: OrchItem[] = [
 type State = {
   phase: Phase;
   bans: { blue: string[]; red: string[] };
-  // pick
-  blueHistory: [string[], string[], string[]]; // 每步完成后固化到这里
-  blueStep: number;   // 0/1/2，当前进行到哪步
+  // 每步完成后固化到 history；当前步骤进行中的放 current
+  blueHistory: [string[], string[], string[]];
   blueCurrent: string[];
   redHistory: [string[], string[], string[]];
-  redStep: number;
   redCurrent: string[];
-  orchIdx: number; // 全局进度 0~6
+  orchIdx: number; // 0~5 进行中，6 = done
   banTurn: Side;
 };
 
@@ -48,19 +47,21 @@ const initState: State = {
   phase: 'ban',
   bans: { blue: [], red: [] },
   blueHistory: [[], [], []],
-  blueStep: 0,
   blueCurrent: [],
   redHistory: [[], [], []],
-  redStep: 0,
   redCurrent: [],
   orchIdx: 0,
   banTurn: 'blue',
 };
 
+function cloneHistory(h: [string[], string[], string[]]): [string[], string[], string[]] {
+  return [h[0].slice(), h[1].slice(), h[2].slice()];
+}
+
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'RESET':
-      return { ...initState };
+      return { ...initState, blueHistory: [[], [], []], redHistory: [[], [], []] };
 
     case 'BAN': {
       if (state.phase !== 'ban') return state;
@@ -69,95 +70,124 @@ function reducer(state: State, action: Action): State {
       const nextBans = { ...state.bans, [side]: [...state.bans[side], action.heroId] };
       const done = nextBans.blue.length === MAX_BANS && nextBans.red.length === MAX_BANS;
       return {
-        ...state, bans: nextBans,
-        phase: done ? 'pick' : state.phase,
+        ...state,
+        bans: nextBans,
+        phase: done ? 'pick' : 'ban',
         banTurn: done ? 'blue' : (side === 'blue' ? 'red' : 'blue'),
       };
     }
 
     case 'PICK': {
       if (state.phase !== 'pick') return state;
+      if (state.orchIdx >= ORCH.length) return state;
       const orch = ORCH[state.orchIdx];
 
       if (orch.kind === 'blue') {
-        const step = BLUE_STEPS[state.blueStep];
-        if (state.blueCurrent.length >= step.count) return state;
+        const stepIdx = orch.blueStep;
+        const maxCount = BLUE_STEPS[stepIdx];
+        if (state.blueCurrent.length >= maxCount) return state;
         const next = [...state.blueCurrent, action.heroId];
-        if (next.length < step.count) return { ...state, blueCurrent: next };
-        // 固化历史，进入下一步
-        const newHistory: [string[], string[], string[]] = [...state.blueHistory];
-        newHistory[state.blueStep] = next;
+        if (next.length < maxCount) {
+          // 步骤未完成，只更新 current
+          return { ...state, blueCurrent: next };
+        }
+        // 步骤完成：固化到 history，推进 orchIdx
+        const newHistory = cloneHistory(state.blueHistory);
+        newHistory[stepIdx] = next;
         const ni = state.orchIdx + 1;
-        if (ni >= ORCH.length) return { ...state, blueHistory: newHistory, blueCurrent: [], orchIdx: ni, phase: 'done' };
-        return { ...state, blueHistory: newHistory, blueCurrent: [], orchIdx: ni };
+        return {
+          ...state,
+          blueHistory: newHistory,
+          blueCurrent: [],
+          orchIdx: ni,
+          phase: ni >= ORCH.length ? 'done' : 'pick',
+        };
       }
 
       // red
-      const step = RED_STEPS[state.redStep];
-      if (state.redCurrent.length >= step.count) return state;
+      const stepIdx = orch.redStep;
+      const maxCount = RED_STEPS[stepIdx];
+      if (state.redCurrent.length >= maxCount) return state;
       const next = [...state.redCurrent, action.heroId];
-      if (next.length < step.count) return { ...state, redCurrent: next };
-      const newHistory: [string[], string[], string[]] = [...state.redHistory];
-      newHistory[state.redStep] = next;
+      if (next.length < maxCount) {
+        return { ...state, redCurrent: next };
+      }
+      const newHistory = cloneHistory(state.redHistory);
+      newHistory[stepIdx] = next;
       const ni = state.orchIdx + 1;
-      if (ni >= ORCH.length) return { ...state, redHistory: newHistory, redCurrent: [], orchIdx: ni, phase: 'done' };
-      return { ...state, redHistory: newHistory, redCurrent: [], orchIdx: ni };
+      return {
+        ...state,
+        redHistory: newHistory,
+        redCurrent: [],
+        orchIdx: ni,
+        phase: ni >= ORCH.length ? 'done' : 'pick',
+      };
     }
 
     case 'UNDO': {
-      if (state.phase === 'done') return { ...state, phase: 'pick' };
-      if (state.phase === 'ban') {
-        const prev = state.banTurn === 'blue' ? 'red' : 'blue';
-        if (state.bans[prev].length === 0) return state;
-        return {
-          ...state,
-          bans: { ...state.bans, [prev]: state.bans[prev].slice(0, -1) },
-          banTurn: prev,
-        };
+      // done → 回到 pick 最后一步
+      if (state.phase === 'done') {
+        return { ...state, phase: 'pick' };
       }
-      // pick：退回上一步 orch
-      if (state.orchIdx === 0) return { ...state, phase: 'ban', orchIdx: 0 };
 
-      const prevOrch = ORCH[state.orchIdx - 1];
+      if (state.phase === 'ban') {
+        // 谁最后 ban 的就撤谁
+        const lastBanner: Side = state.bans.blue.length > state.bans.red.length ? 'blue' : 'red';
+        if (state.bans[lastBanner].length === 0) return state;
+        const newBans = { ...state.bans, [lastBanner]: state.bans[lastBanner].slice(0, -1) };
+        // 撤销后轮到 lastBanner
+        return { ...state, bans: newBans, banTurn: lastBanner };
+      }
+
+      // pick 阶段
+      // 如果 current 里有东西，先撤 current 最后一个
+      const orch = ORCH[state.orchIdx];
+      if (orch) {
+        if (orch.kind === 'blue' && state.blueCurrent.length > 0) {
+          return { ...state, blueCurrent: state.blueCurrent.slice(0, -1) };
+        }
+        if (orch.kind === 'red' && state.redCurrent.length > 0) {
+          return { ...state, redCurrent: state.redCurrent.slice(0, -1) };
+        }
+      }
+
+      // current 为空，退回上一个 orch step
+      if (state.orchIdx === 0) {
+        // 退回到 ban 阶段最后一步
+        const lastBanner: Side = state.bans.blue.length >= state.bans.red.length ? 'blue' : 'red';
+        const newBans = { ...state.bans, [lastBanner]: state.bans[lastBanner].slice(0, -1) };
+        return { ...state, phase: 'ban', bans: newBans, banTurn: lastBanner };
+      }
+
+      const prevOrchIdx = state.orchIdx - 1;
+      const prevOrch = ORCH[prevOrchIdx];
 
       if (prevOrch.kind === 'blue') {
         const ps = prevOrch.blueStep;
-        if (state.blueStep === ps) {
-          // 还在同一步，撤销当前步骤最后1个
-          if (state.blueCurrent.length === 0) {
-            const prevDone = state.blueStep - 1;
-            if (prevDone < 0) return state;
-            const recovered = state.blueHistory[prevDone];
-            const nh: [string[], string[], string[]] = [...state.blueHistory];
-            nh[prevDone] = [];
-            return { ...state, blueHistory: nh, blueStep: prevDone, blueCurrent: recovered.length > 0 ? recovered.slice(-1) : [], orchIdx: state.orchIdx - 1 };
-          }
-          return { ...state, blueCurrent: state.blueCurrent.slice(0, -1) };
-        }
-        // orch已前进，退回上一步
-        const recovered = state.blueHistory[ps];
-        const nh: [string[], string[], string[]] = [...state.blueHistory];
+        // 把 blueHistory[ps] 恢复到 blueCurrent，并清空 history[ps]
+        const recovered = state.blueHistory[ps].slice();
+        const nh = cloneHistory(state.blueHistory);
         nh[ps] = [];
-        return { ...state, blueHistory: nh, blueStep: ps, blueCurrent: recovered.length > 0 ? recovered.slice(-1) : [], orchIdx: state.orchIdx - 1 };
+        // 撤销最后一个 pick（恢复 count-1 个）
+        return {
+          ...state,
+          blueHistory: nh,
+          blueCurrent: recovered.slice(0, -1),
+          orchIdx: prevOrchIdx,
+        };
       }
 
       // red
-      const rs = prevOrch.redStep;
-      if (state.redStep === rs) {
-        if (state.redCurrent.length === 0) {
-          const prevDone = state.redStep - 1;
-          if (prevDone < 0) return state;
-          const recovered = state.redHistory[prevDone];
-          const nh: [string[], string[], string[]] = [...state.redHistory];
-          nh[prevDone] = [];
-          return { ...state, redHistory: nh, redStep: prevDone, redCurrent: recovered.length > 0 ? recovered.slice(-1) : [], orchIdx: state.orchIdx - 1 };
-        }
-        return { ...state, redCurrent: state.redCurrent.slice(0, -1) };
-      }
-      const recovered = state.redHistory[rs];
-      const nh: [string[], string[], string[]] = [...state.redHistory];
-      nh[rs] = [];
-      return { ...state, redHistory: nh, redStep: rs, redCurrent: recovered.length > 0 ? recovered.slice(-1) : [], orchIdx: state.orchIdx - 1 };
+      const ps = prevOrch.redStep;
+      const recovered = state.redHistory[ps].slice();
+      const nh = cloneHistory(state.redHistory);
+      nh[ps] = [];
+      return {
+        ...state,
+        redHistory: nh,
+        redCurrent: recovered.slice(0, -1),
+        orchIdx: prevOrchIdx,
+      };
     }
 
     default:
@@ -176,19 +206,20 @@ export default function BPPage() {
 
   const { phase, bans, blueHistory, blueCurrent, redHistory, redCurrent, orchIdx } = state;
 
-  const currentOrch: OrchItem | null = phase === 'pick' ? ORCH[orchIdx] : null;
+  const currentOrch: OrchItem | null = phase === 'pick' && orchIdx < ORCH.length ? ORCH[orchIdx] : null;
 
   const activeSide: Side | null =
     phase === 'pick' && currentOrch ? currentOrch.kind :
     phase === 'ban' ? state.banTurn : null;
 
-  // 双方所有已选
-  const blueAllPicks = [...blueHistory.flat(), ...blueCurrent];
-  const redAllPicks = [...redHistory.flat(), ...redCurrent];
+  // 双方所有已选（history 固化 + current 进行中）
+  const blueAllPicks = useMemo(() => [...blueHistory[0], ...blueHistory[1], ...blueHistory[2], ...blueCurrent], [blueHistory, blueCurrent]);
+  const redAllPicks  = useMemo(() => [...redHistory[0],  ...redHistory[1],  ...redHistory[2],  ...redCurrent],  [redHistory,  redCurrent]);
 
   const takenIds = useMemo(() => {
-    if (phase === 'pick') return [...bans.blue, ...bans.red, ...blueAllPicks, ...redAllPicks];
-    return [...bans.blue, ...bans.red];
+    const base = [...bans.blue, ...bans.red];
+    if (phase === 'pick' || phase === 'done') return [...base, ...blueAllPicks, ...redAllPicks];
+    return base;
   }, [bans, phase, blueAllPicks, redAllPicks]);
 
   const filteredHeroes = useMemo(() => {
@@ -204,14 +235,12 @@ export default function BPPage() {
     if (phase === 'ban') return (activeSide === 'blue' ? '🔵蓝方' : '🔴红方') + ' 禁用';
     if (phase === 'done') return '阵容完成';
     const o = currentOrch!;
-    if (o.kind === 'blue') return `🔵蓝方 第${o.blueStep + 1}步（选${BLUE_STEPS[o.blueStep].count}个）`;
-    return `🔴红方 第${o.redStep + 1}步（选${RED_STEPS[o.redStep].count}个）`;
-  })();
-
-  const remainInStep = (() => {
-    if (phase !== 'pick' || !currentOrch) return 0;
-    if (currentOrch.kind === 'blue') return BLUE_STEPS[currentOrch.blueStep].count - blueCurrent.length;
-    return RED_STEPS[currentOrch.redStep].count - redCurrent.length;
+    if (o.kind === 'blue') {
+      const rem = BLUE_STEPS[o.blueStep] - blueCurrent.length;
+      return `🔵蓝方 第${o.blueStep + 1}步（还需选 ${rem} 个）`;
+    }
+    const rem = RED_STEPS[o.redStep] - redCurrent.length;
+    return `🔴红方 第${o.redStep + 1}步（还需选 ${rem} 个）`;
   })();
 
   const analysis = useMemo(() => {
@@ -276,19 +305,19 @@ export default function BPPage() {
           </div>
           <div className="pick-zone">
             <div className="step-indicator">
-              {BLUE_STEPS.map((s, i) => {
+              {BLUE_STEPS.map((cnt, i) => {
                 const done = blueHistory[i].length > 0;
-                const cur = currentOrch ? currentOrch.kind === 'blue' && currentOrch.blueStep === i : false;
+                const cur = currentOrch?.kind === 'blue' && currentOrch.blueStep === i;
                 return (
                   <div key={i} className={'step-badge ' + (done ? 'done' : cur ? 'current' : 'pending')}>
-                    第{i+1}步（{s.count}个）{done ? '✓' : ''}
+                    第{i+1}步({cnt}个){done ? '✓' : cur ? '▶' : ''}
                   </div>
                 );
               })}
             </div>
             <div className="pick-slots">
               {bpPositions.map((pos, i) => {
-                const heroId = i < blueAllPicks.length ? blueAllPicks[i] : null;
+                const heroId = blueAllPicks[i] ?? null;
                 return (
                   <div key={pos.role} className="pick-slot">
                     {heroId ? (
@@ -335,19 +364,19 @@ export default function BPPage() {
           </div>
           <div className="pick-zone">
             <div className="step-indicator">
-              {RED_STEPS.map((s, i) => {
+              {RED_STEPS.map((cnt, i) => {
                 const done = redHistory[i].length > 0;
-                const cur = currentOrch ? currentOrch.kind === 'red' && currentOrch.redStep === i : false;
+                const cur = currentOrch?.kind === 'red' && currentOrch.redStep === i;
                 return (
                   <div key={i} className={'step-badge ' + (done ? 'done' : cur ? 'current' : 'pending')}>
-                    第{i+1}步（{s.count}个）{done ? '✓' : ''}
+                    第{i+1}步({cnt}个){done ? '✓' : cur ? '▶' : ''}
                   </div>
                 );
               })}
             </div>
             <div className="pick-slots">
               {bpPositions.map((pos, i) => {
-                const heroId = i < redAllPicks.length ? redAllPicks[i] : null;
+                const heroId = redAllPicks[i] ?? null;
                 return (
                   <div key={pos.role} className="pick-slot">
                     {heroId ? (
@@ -370,10 +399,7 @@ export default function BPPage() {
           <span className={'turn-badge ' + activeSide}>{stepLabel}</span>
           <span className="turn-tip">
             {phase === 'ban' && '禁用 · 蓝' + bans.blue.length + '/' + MAX_BANS + ' · 红' + bans.red.length + '/' + MAX_BANS}
-            {phase === 'pick' && (
-              '蓝' + blueAllPicks.length + '/' + MAX_PICKS + ' · 红' + redAllPicks.length + '/' + MAX_PICKS +
-              (remainInStep > 0 ? ' · 还需选 ' + remainInStep + ' 个' : '')
-            )}
+            {phase === 'pick' && '蓝' + blueAllPicks.length + '/' + MAX_PICKS + ' · 红' + redAllPicks.length + '/' + MAX_PICKS}
           </span>
         </div>
       )}
@@ -383,7 +409,7 @@ export default function BPPage() {
           {ORCH.map((o, i) => {
             const done = i < orchIdx;
             const cur = i === orchIdx;
-            const cnt = o.kind === 'blue' ? BLUE_STEPS[o.blueStep].count : RED_STEPS[o.redStep].count;
+            const cnt = o.kind === 'blue' ? BLUE_STEPS[o.blueStep] : RED_STEPS[o.redStep];
             return (
               <div key={i} className={'orch-step ' + (done ? 'done' : cur ? 'current' : 'pending')}>
                 {o.kind === 'blue' ? '🔵' : '🔴'}{cnt}
