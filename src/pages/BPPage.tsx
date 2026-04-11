@@ -24,13 +24,13 @@ export default function BPPage() {
 
   const takenIds = useMemo(() => {
     const picksTaken = [...picks.blue, ...picks.red];
-    // Ban阶段：只排除双方已pick的，不排除己方ban（允许双方重复ban）
+    // Ban阶段：排除己方已ban（禁止同阵营重复ban）+ 排除双方已pick
     if (phase === 'ban') {
-      return picksTaken;
+      return [...picksTaken, ...bans[activePick]];
     }
     // Pick阶段：排除所有已ban和已pick的
     return [...picksTaken, ...bans.blue, ...bans.red];
-  }, [bans, picks, phase]);
+  }, [bans, picks, phase, activePick]);
 
   const filteredHeroes = useMemo(() => {
     return heroes.filter(h => {
@@ -47,42 +47,40 @@ export default function BPPage() {
     if (phase === 'ban') {
       const side = activePick;
       if (bans[side].length >= 5) return;
-      setBans(prev => ({ ...prev, [side]: [...prev[side], hero.id] }));
-      advanceTurn();
+      setBans(prev => {
+        const nextBans = { ...prev, [side]: [...prev[side], hero.id] };
+        const nb = nextBans.blue.length;
+        const nr = nextBans.red.length;
+        if (nb === 5 && nr === 5) {
+          setPhase('pick');
+          setActivePick('blue');
+        } else {
+          setActivePick(side === 'blue' ? 'red' : 'blue');
+        }
+        return nextBans;
+      });
     } else if (phase === 'pick') {
       const side = activePick;
       if (picks[side].length >= 5) return;
-      setPicks(prev => ({ ...prev, [side]: [...prev[side], hero.id] }));
-      advanceTurn();
+      setPicks(prev => {
+        const nextPicks = { ...prev, [side]: [...prev[side], hero.id] };
+        const nb = nextPicks.blue.length;
+        const nr = nextPicks.red.length;
+        if (nb === 5) {
+          if (nr === 5) {
+            setPhase('done');
+          } else {
+            setActivePick('red');
+          }
+        } else {
+          setActivePick(side === 'blue' ? 'red' : 'blue');
+        }
+        return nextPicks;
+      });
     }
   };
 
   // Pick顺序：蓝1→红2→蓝2→红2→蓝2→红1（双方各5）
-  const advanceTurn = () => {
-    const nextSide: Side = activePick === 'blue' ? 'red' : 'blue';
-
-    if (phase === 'ban') {
-      if (bans.blue.length === 5 && bans.red.length === 5) {
-        setPhase('pick');
-        setActivePick('blue');
-      } else {
-        setActivePick(nextSide);
-      }
-    } else if (phase === 'pick') {
-      // 蓝方已满5个 → 红方继续直到5
-      // 红方已满5个 → 完成
-      if (picks.blue.length === 5) {
-        if (picks.red.length === 5) {
-          setPhase('done');
-        } else {
-          setActivePick('red');
-        }
-      } else {
-        setActivePick(nextSide);
-      }
-    }
-  };
-
   const reset = () => {
     setPhase('ban');
     setBans({ blue: [], red: [] });
