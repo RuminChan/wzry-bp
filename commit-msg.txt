@@ -1,0 +1,1 @@
+fix BP: ban2 condition and 5 ban slots

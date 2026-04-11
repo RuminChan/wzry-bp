@@ -73,7 +73,7 @@ export default function BPPage() {
         setActivePick(nextSide);
       }
     } else if (phase === 'ban2') {
-      if (bans.blue.length === 4 && bans.red.length === 4) {
+      if (bans.blue.length === 5 && bans.red.length === 5) {
         setPhase('pick2');
       } else {
         setActivePick(nextSide);
@@ -175,7 +175,7 @@ export default function BPPage() {
           <div className="ban-zone">
             <span className="zone-label">禁用</span>
             <div className="ban-slots">
-              {[0, 1, 2, 3].map(i => (
+              {[0, 1, 2, 3, 4].map(i => (
                 <div key={i} className="ban-slot">
                   {bans.blue[i] ? (
                     <HeroMini id={bans.blue[i]} isBan />
@@ -232,7 +232,7 @@ export default function BPPage() {
           <div className="ban-zone">
             <span className="zone-label">禁用</span>
             <div className="ban-slots">
-              {[0, 1, 2, 3].map(i => (
+              {[0, 1, 2, 3, 4].map(i => (
                 <div key={i} className="ban-slot">
                   {bans.red[i] ? (
                     <HeroMini id={bans.red[i]} isBan />
