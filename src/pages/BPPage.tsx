@@ -20,7 +20,22 @@ export default function BPPage() {
   const [picks, setPicks] = useState<{ blue: string[]; red: string[] }>({ blue: [], red: [] });
   const [search, setSearch] = useState('');
   const [filterPos, setFilterPos] = useState<string>('all');
-  const [activePick, setActivePick] = useState<Side>('blue');
+  // Pick步骤顺序：蓝1→红2→蓝2→红2→蓝2→红1
+  const [pickStep, setPickStep] = useState(0);
+  // Ban阶段交替：当前操作方
+  const [banTurn, setBanTurn] = useState<Side>('blue');
+
+  // 每个步骤选几个英雄
+  const PICK_STEPS: { side: Side; count: number; label: string }[] = [
+    { side: 'blue', count: 1, label: '蓝方 选1个' },
+    { side: 'red',  count: 2, label: '红方 选2个' },
+    { side: 'blue', count: 2, label: '蓝方 选2个' },
+    { side: 'red',  count: 2, label: '红方 选2个' },
+    { side: 'blue', count: 2, label: '蓝方 选2个' },
+    { side: 'red',  count: 1, label: '红方 选1个' },
+  ];
+
+  const activePick = phase === 'pick' ? PICK_STEPS[pickStep].side : banTurn;
 
   const takenIds = useMemo(() => {
     const picksTaken = [...picks.blue, ...picks.red];
@@ -45,42 +60,40 @@ export default function BPPage() {
     if (phase === 'done') return;
 
     if (phase === 'ban') {
-      const side = activePick;
+      const side = banTurn;
       if (bans[side].length >= 5) return;
-      setBans(prev => {
-        const nextBans = { ...prev, [side]: [...prev[side], hero.id] };
-        const nb = nextBans.blue.length;
-        const nr = nextBans.red.length;
-        if (nb === 5 && nr === 5) {
-          setPhase('pick');
-          setActivePick('blue');
-        } else {
-          setActivePick(side === 'blue' ? 'red' : 'blue');
-        }
-        return nextBans;
-      });
+      const nextBans = { ...bans, [side]: [...bans[side], hero.id] };
+      const nb = nextBans.blue.length;
+      const nr = nextBans.red.length;
+      if (nb === 5 && nr === 5) {
+        setBans(nextBans);
+        setPhase('pick');
+        setPickStep(0);
+      } else {
+        setBans(nextBans);
+        setBanTurn(side === 'blue' ? 'red' : 'blue');
+      }
     } else if (phase === 'pick') {
-      const side = activePick;
-      if (picks[side].length >= 5) return;
-      setPicks(prev => {
-        const nextPicks = { ...prev, [side]: [...prev[side], hero.id] };
-        const nb = nextPicks.blue.length;
-        const nr = nextPicks.red.length;
-        if (nb === 5) {
-          if (nr === 5) {
-            setPhase('done');
-          } else {
-            setActivePick('red');
-          }
+      const step = PICK_STEPS[pickStep];
+      const side = step.side;
+      if (picks[side].length >= step.count) return;
+      const nextSidePicks = [...picks[side], hero.id];
+      setPicks(prev => ({ ...prev, [side]: nextSidePicks }));
+      // 该步骤选够了吗
+      if (nextSidePicks.length < step.count) {
+        // 同一步骤继续选
+      } else {
+        // 进入下一步
+        const nextStep = pickStep + 1;
+        if (nextStep >= PICK_STEPS.length) {
+          setPhase('done');
         } else {
-          setActivePick(side === 'blue' ? 'red' : 'blue');
+          setPickStep(nextStep);
         }
-        return nextPicks;
-      });
+      }
     }
   };
 
-  // Pick顺序：蓝1→红2→蓝2→红2→蓝2→红1（双方各5）
   // 返回上一步：撤销对方刚做的操作
   const undoLast = () => {
     if (phase === 'done') {
@@ -92,13 +105,28 @@ export default function BPPage() {
     const prevSide: Side = activePick === 'blue' ? 'red' : 'blue';
 
     if (phase === 'ban') {
-      if (bans[prevSide].length === 0) return; // 没有可撤销的
+      if (bans[prevSide].length === 0) return;
       setBans(prev => ({ ...prev, [prevSide]: prev[prevSide].slice(0, -1) }));
-      setActivePick(prevSide); // 对方重做
+      setBanTurn(prevSide); // 对方重做
     } else if (phase === 'pick') {
-      if (picks[prevSide].length === 0) return;
-      setPicks(prev => ({ ...prev, [prevSide]: prev[prevSide].slice(0, -1) }));
-      setActivePick(prevSide);
+      // 找上一个有选的步骤
+      let stepIdx = pickStep;
+      while (stepIdx >= 0) {
+        const s = PICK_STEPS[stepIdx];
+        if (picks[s.side].length > 0) {
+          setPicks(prev => ({ ...prev, [s.side]: prev[s.side].slice(0, -1) }));
+          // 如果这一步还没选完，留在同一步
+          if (picks[s.side].length > 0 && picks[s.side].length < s.count) {
+            return;
+          }
+          // 选够了则退回上一步
+          setPickStep(Math.max(0, stepIdx - 1));
+          return;
+        }
+        stepIdx--;
+      }
+      // pick全空则退回ban阶段
+      if (stepIdx < 0) setPhase('ban');
     }
   };
 
@@ -106,9 +134,10 @@ export default function BPPage() {
     setPhase('ban');
     setBans({ blue: [], red: [] });
     setPicks({ blue: [], red: [] });
+    setPickStep(0);
+    setBanTurn('blue');
     setSearch('');
     setFilterPos('all');
-    setActivePick('blue');
   };
 
   const analysis = useMemo(() => {
@@ -293,11 +322,11 @@ export default function BPPage() {
         <div className="turn-indicator">
           <span className={`turn-badge ${activePick}`}>
             {activePick === 'blue' ? '🔵' : '🔴'} {activePick === 'blue' ? '蓝方' : '红方'}
-            {phase === 'ban' ? ' 禁用' : ' 选择'}
+            {phase === 'ban' ? ' 禁用' : ` 选${PICK_STEPS[pickStep].count}个`}
           </span>
           <span className="turn-tip">
             {phase === 'ban' && `禁用 · 蓝方 ${bans.blue.length}/5 · 红方 ${bans.red.length}/5`}
-            {phase === 'pick' && `选择 · 蓝方 ${picks.blue.length}/5 · 红方 ${picks.red.length}/5`}
+            {phase === 'pick' && `选择 · 蓝方 ${picks.blue.length}/5 · 红方 ${picks.red.length}/5 · 第${pickStep + 1}/${PICK_STEPS.length}轮`}
           </span>
         </div>
       )}
