@@ -35,6 +35,9 @@ export default function BPPage() {
     { side: 'red',  count: 1, label: '红方 选1个' },
   ];
 
+  // 每方最多选5个（所有pick步骤加起来）
+  const MAX_PICKS = 5;
+
   const activePick = phase === 'pick' ? PICK_STEPS[pickStep].side : banTurn;
 
   const takenIds = useMemo(() => {
@@ -77,11 +80,13 @@ export default function BPPage() {
       const step = PICK_STEPS[pickStep];
       const side = step.side;
       setPicks(prev => {
-        // 已经在这一步骤选够了
+        // 每方最多5个（阵营总限额）
+        if (prev[side].length >= MAX_PICKS) return prev;
+        // 这一步骤已选够了吗（这一步要选 count 个）
         if (prev[side].length >= step.count) return prev;
         const nextSidePicks = [...prev[side], hero.id];
         const newPicks = { ...prev, [side]: nextSidePicks };
-        // 该步骤还没选够，留在这一步
+        // 这一步骤还没选够，留在这一步
         if (nextSidePicks.length < step.count) return newPicks;
         // 选够了，进入下一步或结束
         const nextStep = pickStep + 1;
