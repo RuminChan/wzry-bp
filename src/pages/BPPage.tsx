@@ -4,24 +4,37 @@ import { heroes, getHeroById, bpPositions, tierColors, type Hero } from '../data
 type Side = 'blue' | 'red';
 type Phase = 'ban' | 'pick' | 'done';
 
-// Pick顺序：蓝1→红2→蓝2→红2→蓝2→红1
-const PICK_STEPS: { side: Side; count: number }[] = [
-  { side: 'blue', count: 1 },
-  { side: 'red',  count: 2 },
-  { side: 'blue', count: 2 },
-  { side: 'red',  count: 2 },
-  { side: 'blue', count: 2 },
-  { side: 'red',  count: 1 },
-];
-
-const MAX_PICKS = 5;
 const MAX_BANS = 5;
+const MAX_PICKS = 5;
+
+const BLUE_STEPS = [{ count: 1 }, { count: 2 }, { count: 2 }];
+const RED_STEPS  = [{ count: 2 }, { count: 2 }, { count: 1 }];
+
+// 全局流程编排：蓝1 → 红2 → 蓝2 → 红2 → 蓝2 → 红1
+type OrchItem =
+  | { kind: 'blue'; blueStep: 0 | 1 | 2 }
+  | { kind: 'red';  redStep:  0 | 1 | 2 };
+
+const ORCH: OrchItem[] = [
+  { kind: 'blue', blueStep: 0 },
+  { kind: 'red',  redStep:  0 },
+  { kind: 'blue', blueStep: 1 },
+  { kind: 'red',  redStep:  1 },
+  { kind: 'blue', blueStep: 2 },
+  { kind: 'red',  redStep:  2 },
+];
 
 type State = {
   phase: Phase;
   bans: { blue: string[]; red: string[] };
-  picks: { blue: string[]; red: string[] };
-  pickStep: number;
+  // pick
+  blueHistory: [string[], string[], string[]]; // 每步完成后固化到这里
+  blueStep: number;   // 0/1/2，当前进行到哪步
+  blueCurrent: string[];
+  redHistory: [string[], string[], string[]];
+  redStep: number;
+  redCurrent: string[];
+  orchIdx: number; // 全局进度 0~6
   banTurn: Side;
 };
 
@@ -31,10 +44,23 @@ type Action =
   | { type: 'UNDO' }
   | { type: 'RESET' };
 
+const initState: State = {
+  phase: 'ban',
+  bans: { blue: [], red: [] },
+  blueHistory: [[], [], []],
+  blueStep: 0,
+  blueCurrent: [],
+  redHistory: [[], [], []],
+  redStep: 0,
+  redCurrent: [],
+  orchIdx: 0,
+  banTurn: 'blue',
+};
+
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'RESET':
-      return { phase: 'ban', bans: { blue: [], red: [] }, picks: { blue: [], red: [] }, pickStep: 0, banTurn: 'blue' };
+      return { ...initState };
 
     case 'BAN': {
       if (state.phase !== 'ban') return state;
@@ -43,89 +69,101 @@ function reducer(state: State, action: Action): State {
       const nextBans = { ...state.bans, [side]: [...state.bans[side], action.heroId] };
       const done = nextBans.blue.length === MAX_BANS && nextBans.red.length === MAX_BANS;
       return {
-        ...state,
-        bans: nextBans,
+        ...state, bans: nextBans,
         phase: done ? 'pick' : state.phase,
-        pickStep: done ? 0 : state.pickStep,
         banTurn: done ? 'blue' : (side === 'blue' ? 'red' : 'blue'),
       };
     }
 
     case 'PICK': {
       if (state.phase !== 'pick') return state;
-      const step = PICK_STEPS[state.pickStep];
-      const side = step.side;
-      // 每方最多5个
-      if (state.picks[side].length >= MAX_PICKS) return state;
-      // 这一步骤已选够了（只限本步骤数量，不是阵营总数）
-      if (state.picks[side].length >= step.count) return state;
-      const nextPicks = { ...state.picks, [side]: [...state.picks[side], action.heroId] };
-      // 这一步骤还没选够，留在这一步
-      if (nextPicks[side].length < step.count) {
-        return { ...state, picks: nextPicks };
+      const orch = ORCH[state.orchIdx];
+
+      if (orch.kind === 'blue') {
+        const step = BLUE_STEPS[state.blueStep];
+        if (state.blueCurrent.length >= step.count) return state;
+        const next = [...state.blueCurrent, action.heroId];
+        if (next.length < step.count) return { ...state, blueCurrent: next };
+        // 固化历史，进入下一步
+        const newHistory: [string[], string[], string[]] = [...state.blueHistory];
+        newHistory[state.blueStep] = next;
+        const ni = state.orchIdx + 1;
+        if (ni >= ORCH.length) return { ...state, blueHistory: newHistory, blueCurrent: [], orchIdx: ni, phase: 'done' };
+        return { ...state, blueHistory: newHistory, blueCurrent: [], orchIdx: ni };
       }
-      // 选够了，进入下一步或结束
-      const nextStep = state.pickStep + 1;
-      if (nextStep >= PICK_STEPS.length) {
-        return { ...state, picks: nextPicks, phase: 'done' };
-      }
-      return { ...state, picks: nextPicks, pickStep: nextStep };
+
+      // red
+      const step = RED_STEPS[state.redStep];
+      if (state.redCurrent.length >= step.count) return state;
+      const next = [...state.redCurrent, action.heroId];
+      if (next.length < step.count) return { ...state, redCurrent: next };
+      const newHistory: [string[], string[], string[]] = [...state.redHistory];
+      newHistory[state.redStep] = next;
+      const ni = state.orchIdx + 1;
+      if (ni >= ORCH.length) return { ...state, redHistory: newHistory, redCurrent: [], orchIdx: ni, phase: 'done' };
+      return { ...state, redHistory: newHistory, redCurrent: [], orchIdx: ni };
     }
 
     case 'UNDO': {
-      if (state.phase === 'done') {
-        return { ...state, phase: 'pick' };
-      }
+      if (state.phase === 'done') return { ...state, phase: 'pick' };
       if (state.phase === 'ban') {
-        const prevSide = state.banTurn === 'blue' ? 'red' : 'blue';
-        if (state.bans[prevSide].length === 0) return state;
+        const prev = state.banTurn === 'blue' ? 'red' : 'blue';
+        if (state.bans[prev].length === 0) return state;
         return {
           ...state,
-          bans: { ...state.bans, [prevSide]: state.bans[prevSide].slice(0, -1) },
-          banTurn: prevSide,
+          bans: { ...state.bans, [prev]: state.bans[prev].slice(0, -1) },
+          banTurn: prev,
         };
       }
-      // pick阶段：撤销对方最近的操作（找上一个有选的步骤）
-      // 找上一个有选的步骤
-      let idx = state.pickStep;
-      while (idx >= 0) {
-        const s = PICK_STEPS[idx];
-        if (state.picks[s.side].length > 0) {
-          const newPicks = { ...state.picks, [s.side]: state.picks[s.side].slice(0, -1) };
-          // 如果这一步还没选完，留在同一步
-          if (newPicks[s.side].length < s.count) {
-            return { ...state, picks: newPicks };
+      // pick：退回上一步 orch
+      if (state.orchIdx === 0) return { ...state, phase: 'ban', orchIdx: 0 };
+
+      const prevOrch = ORCH[state.orchIdx - 1];
+
+      if (prevOrch.kind === 'blue') {
+        const ps = prevOrch.blueStep;
+        if (state.blueStep === ps) {
+          // 还在同一步，撤销当前步骤最后1个
+          if (state.blueCurrent.length === 0) {
+            const prevDone = state.blueStep - 1;
+            if (prevDone < 0) return state;
+            const recovered = state.blueHistory[prevDone];
+            const nh: [string[], string[], string[]] = [...state.blueHistory];
+            nh[prevDone] = [];
+            return { ...state, blueHistory: nh, blueStep: prevDone, blueCurrent: recovered.length > 0 ? recovered.slice(-1) : [], orchIdx: state.orchIdx - 1 };
           }
-          // 选够了则退回上一步
-          return { ...state, picks: newPicks, pickStep: Math.max(0, idx - 1) };
+          return { ...state, blueCurrent: state.blueCurrent.slice(0, -1) };
         }
-        idx--;
+        // orch已前进，退回上一步
+        const recovered = state.blueHistory[ps];
+        const nh: [string[], string[], string[]] = [...state.blueHistory];
+        nh[ps] = [];
+        return { ...state, blueHistory: nh, blueStep: ps, blueCurrent: recovered.length > 0 ? recovered.slice(-1) : [], orchIdx: state.orchIdx - 1 };
       }
-      // pick全空则退回ban阶段
-      if (idx < 0) {
-        return { ...state, phase: 'ban', pickStep: 0 };
+
+      // red
+      const rs = prevOrch.redStep;
+      if (state.redStep === rs) {
+        if (state.redCurrent.length === 0) {
+          const prevDone = state.redStep - 1;
+          if (prevDone < 0) return state;
+          const recovered = state.redHistory[prevDone];
+          const nh: [string[], string[], string[]] = [...state.redHistory];
+          nh[prevDone] = [];
+          return { ...state, redHistory: nh, redStep: prevDone, redCurrent: recovered.length > 0 ? recovered.slice(-1) : [], orchIdx: state.orchIdx - 1 };
+        }
+        return { ...state, redCurrent: state.redCurrent.slice(0, -1) };
       }
-      return state;
+      const recovered = state.redHistory[rs];
+      const nh: [string[], string[], string[]] = [...state.redHistory];
+      nh[rs] = [];
+      return { ...state, redHistory: nh, redStep: rs, redCurrent: recovered.length > 0 ? recovered.slice(-1) : [], orchIdx: state.orchIdx - 1 };
     }
 
     default:
       return state;
   }
 }
-
-const initState: State = {
-  phase: 'ban',
-  bans: { blue: [], red: [] },
-  picks: { blue: [], red: [] },
-  pickStep: 0,
-  banTurn: 'blue',
-};
-
-const PHASES: { key: Phase; label: string }[] = [
-  { key: 'ban', label: '禁用阶段' },
-  { key: 'pick', label: '选择阶段' },
-  { key: 'done', label: '阵容分析' },
-];
 
 function tierToClass(tier: string) {
   return 'tier-' + tier.toLowerCase().replace('.', '_');
@@ -136,15 +174,22 @@ export default function BPPage() {
   const [search, setSearch] = useState('');
   const [filterPos, setFilterPos] = useState<string>('all');
 
-  const { phase, bans, picks, pickStep, banTurn } = state;
+  const { phase, bans, blueHistory, blueCurrent, redHistory, redCurrent, orchIdx } = state;
 
-  const activePick: Side = phase === 'pick' ? PICK_STEPS[pickStep].side : banTurn;
+  const currentOrch: OrchItem | null = phase === 'pick' ? ORCH[orchIdx] : null;
+
+  const activeSide: Side | null =
+    phase === 'pick' && currentOrch ? currentOrch.kind :
+    phase === 'ban' ? state.banTurn : null;
+
+  // 双方所有已选
+  const blueAllPicks = [...blueHistory.flat(), ...blueCurrent];
+  const redAllPicks = [...redHistory.flat(), ...redCurrent];
 
   const takenIds = useMemo(() => {
-    const picksTaken = [...picks.blue, ...picks.red];
-    if (phase === 'ban') return [...picksTaken, ...bans[activePick]];
-    return [...picksTaken, ...bans.blue, ...bans.red];
-  }, [bans, picks, phase, activePick]);
+    if (phase === 'pick') return [...bans.blue, ...bans.red, ...blueAllPicks, ...redAllPicks];
+    return [...bans.blue, ...bans.red];
+  }, [bans, phase, blueAllPicks, redAllPicks]);
 
   const filteredHeroes = useMemo(() => {
     return heroes.filter(h => {
@@ -155,33 +200,32 @@ export default function BPPage() {
     });
   }, [takenIds, filterPos, search]);
 
-  // 当前步骤信息
-  const currentStep = phase === 'pick' ? PICK_STEPS[pickStep] : null;
-  const stepLabel = currentStep
-    ? `${currentStep.side === 'blue' ? '🔵蓝方' : '🔴红方'} 选${currentStep.count}个`
-    : phase === 'ban'
-    ? `${activePick === 'blue' ? '🔵蓝方' : '🔴红方'} 禁用`
-    : '完成';
+  const stepLabel = (() => {
+    if (phase === 'ban') return (activeSide === 'blue' ? '🔵蓝方' : '🔴红方') + ' 禁用';
+    if (phase === 'done') return '阵容完成';
+    const o = currentOrch!;
+    if (o.kind === 'blue') return `🔵蓝方 第${o.blueStep + 1}步（选${BLUE_STEPS[o.blueStep].count}个）`;
+    return `🔴红方 第${o.redStep + 1}步（选${RED_STEPS[o.redStep].count}个）`;
+  })();
+
+  const remainInStep = (() => {
+    if (phase !== 'pick' || !currentOrch) return 0;
+    if (currentOrch.kind === 'blue') return BLUE_STEPS[currentOrch.blueStep].count - blueCurrent.length;
+    return RED_STEPS[currentOrch.redStep].count - redCurrent.length;
+  })();
 
   const analysis = useMemo(() => {
-    if (picks.blue.length === 0 && picks.red.length === 0) return null;
-    const calcScore = (sidePicks: string[]) => {
-      let score = 0;
-      let synergyCount = 0;
-      let weaknessCount = 0;
-      const heroObjs = sidePicks.map(id => getHeroById(id)).filter(Boolean) as Hero[];
-      heroObjs.forEach(h => {
+    if (blueAllPicks.length === 0 && redAllPicks.length === 0) return null;
+    const calc = (picks: string[]) => {
+      let score = 0, synergy = 0, weakness = 0;
+      const objs = picks.map(id => getHeroById(id)).filter(Boolean) as Hero[];
+      objs.forEach(h => {
         score += h.tierScore;
-        sidePicks.forEach(pickId => {
-          const enemy = getHeroById(pickId);
-          if (enemy?.counters.includes(h.id)) weaknessCount++;
-        });
-        h.synergies.forEach(synId => {
-          if (sidePicks.includes(synId)) synergyCount++;
-        });
+        picks.forEach(pid => { if (getHeroById(pid)?.counters.includes(h.id)) weakness++; });
+        h.synergies.forEach(sid => { if (picks.includes(sid)) synergy++; });
       });
       const roles = new Set<string>();
-      heroObjs.forEach(h => {
+      objs.forEach(h => {
         if (h.position.includes('warrior') || h.position.includes('tank')) roles.add('tank');
         if (h.position.includes('mage')) roles.add('mage');
         if (h.position.includes('marksman')) roles.add('marksman');
@@ -189,80 +233,74 @@ export default function BPPage() {
         if (h.position.includes('support')) roles.add('support');
       });
       const completeness = Math.min(roles.size / 4 * 30, 30);
-      return {
-        total: Math.round(score + synergyCount * 3 - weaknessCount * 2 + completeness),
-        synergyCount,
-        weaknessCount,
-        completeness: Math.round(completeness),
-      };
+      return { total: Math.round(score + synergy * 3 - weakness * 2 + completeness), synergy, weakness, completeness: Math.round(completeness) };
     };
-    return { blue: calcScore(picks.blue), red: calcScore(picks.red) };
-  }, [picks]);
+    return { blue: calc(blueAllPicks), red: calc(redAllPicks) };
+  }, [blueAllPicks, redAllPicks]);
 
   return (
     <div className="bp-page">
-      {/* 顶部BP阶段指示器 */}
       <div className="phase-bar">
-        {PHASES.map((p, i) => (
-          <div
-            key={p.key}
-            className={`phase-step ${phase === p.key ? 'current' : ''} ${
-              PHASES.findIndex(x => x.key === phase) > i ? 'done' : ''
-            }`}
-          >
-            <div className="phase-dot" />
-            <span>{p.label}</span>
-          </div>
-        ))}
+        {(['ban', 'pick', 'done'] as Phase[]).map((p, i) => {
+          const curIdx = ['ban', 'pick', 'done'].indexOf(phase);
+          return (
+            <div key={p} className={'phase-step ' + (phase === p ? 'current' : curIdx > i ? 'done' : '')}>
+              <div className="phase-dot" />
+              <span>{p === 'ban' ? '禁用阶段' : p === 'pick' ? '选择阶段' : '阵容分析'}</span>
+            </div>
+          );
+        })}
       </div>
 
-      {/* 操作按钮 */}
       <div className="bp-toolbar">
-        <button className="undo-btn" onClick={() => dispatch({ type: 'UNDO' })} title="撤销上一步">
-          ↩ 返回上一步
-        </button>
-        <button className="reset-btn" onClick={() => dispatch({ type: 'RESET' })} title="重新开始">
-          🔄 重新开始
-        </button>
+        <button className="undo-btn" onClick={() => dispatch({ type: 'UNDO' })}>↩ 返回上一步</button>
+        <button className="reset-btn" onClick={() => dispatch({ type: 'RESET' })}>🔄 重新开始</button>
       </div>
 
-      {/* 阵容面板 */}
       <div className="teams-panel">
         {/* 蓝方 */}
-        <div className={`team-panel blue-team ${activePick === 'blue' && phase !== 'done' ? 'active-turn' : ''}`}>
+        <div className={'team-panel blue-team ' + (activeSide === 'blue' && phase !== 'done' ? 'active-turn' : '')}>
           <div className="team-header">
             <span className="team-name">🔵 蓝方</span>
             {analysis && <span className="team-score">{analysis.blue.total}分</span>}
           </div>
-          {/* Ban区 */}
           <div className="ban-zone">
             <span className="zone-label">禁用</span>
             <div className="ban-slots">
-              {[0, 1, 2, 3, 4].map(i => (
+              {[0,1,2,3,4].map(i => (
                 <div key={i} className="ban-slot">
-                  {bans.blue[i] ? (
-                    <HeroMini id={bans.blue[i]} isBan />
-                  ) : (
-                    <div className="slot-empty">Ban</div>
-                  )}
+                  {bans.blue[i] ? <HeroMini id={bans.blue[i]} isBan /> : <div className="slot-empty">Ban</div>}
                 </div>
               ))}
             </div>
           </div>
-          {/* Pick区 */}
           <div className="pick-zone">
+            <div className="step-indicator">
+              {BLUE_STEPS.map((s, i) => {
+                const done = blueHistory[i].length > 0;
+                const cur = currentOrch ? currentOrch.kind === 'blue' && currentOrch.blueStep === i : false;
+                return (
+                  <div key={i} className={'step-badge ' + (done ? 'done' : cur ? 'current' : 'pending')}>
+                    第{i+1}步（{s.count}个）{done ? '✓' : ''}
+                  </div>
+                );
+              })}
+            </div>
             <div className="pick-slots">
-              {bpPositions.map((pos, i) => (
-                <div key={pos.role} className="pick-slot">
-                  {picks.blue[i] ? (
-                    <HeroMini id={picks.blue[i]} />
-                  ) : (
-                    <div className={`slot-empty ${activePick === 'blue' && phase === 'pick' ? 'highlight' : ''}`}>
-                      <span className="pos-label">{pos.label}</span>
-                    </div>
-                  )}
-                </div>
-              ))}
+              {bpPositions.map((pos, i) => {
+                const heroId = i < blueAllPicks.length ? blueAllPicks[i] : null;
+                return (
+                  <div key={pos.role} className="pick-slot">
+                    {heroId ? (
+                      <HeroMini id={heroId} />
+                    ) : (
+                      <div className={'slot-empty ' + (activeSide === 'blue' && phase === 'pick' ? 'highlight' : '')}>
+                        <span className="pos-label">{pos.label}</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -272,75 +310,86 @@ export default function BPPage() {
           <span>VS</span>
           {analysis && (
             <div className="score-compare">
-              <span className={analysis.blue.total > analysis.red.total ? 'winner' : ''}>
-                蓝{analysis.blue.total}
-              </span>
+              <span className={analysis.blue.total > analysis.red.total ? 'winner' : ''}>蓝{analysis.blue.total}</span>
               <span className="divider">:</span>
-              <span className={analysis.red.total > analysis.blue.total ? 'winner' : ''}>
-                红{analysis.red.total}
-              </span>
+              <span className={analysis.red.total > analysis.blue.total ? 'winner' : ''}>红{analysis.red.total}</span>
             </div>
           )}
         </div>
 
         {/* 红方 */}
-        <div className={`team-panel red-team ${activePick === 'red' && phase !== 'done' ? 'active-turn' : ''}`}>
+        <div className={'team-panel red-team ' + (activeSide === 'red' && phase !== 'done' ? 'active-turn' : '')}>
           <div className="team-header">
             <span className="team-name">🔴 红方</span>
             {analysis && <span className="team-score">{analysis.red.total}分</span>}
           </div>
-          {/* Ban区 */}
           <div className="ban-zone">
             <span className="zone-label">禁用</span>
             <div className="ban-slots">
-              {[0, 1, 2, 3, 4].map(i => (
+              {[0,1,2,3,4].map(i => (
                 <div key={i} className="ban-slot">
-                  {bans.red[i] ? (
-                    <HeroMini id={bans.red[i]} isBan />
-                  ) : (
-                    <div className="slot-empty">Ban</div>
-                  )}
+                  {bans.red[i] ? <HeroMini id={bans.red[i]} isBan /> : <div className="slot-empty">Ban</div>}
                 </div>
               ))}
             </div>
           </div>
-          {/* Pick区 */}
           <div className="pick-zone">
+            <div className="step-indicator">
+              {RED_STEPS.map((s, i) => {
+                const done = redHistory[i].length > 0;
+                const cur = currentOrch ? currentOrch.kind === 'red' && currentOrch.redStep === i : false;
+                return (
+                  <div key={i} className={'step-badge ' + (done ? 'done' : cur ? 'current' : 'pending')}>
+                    第{i+1}步（{s.count}个）{done ? '✓' : ''}
+                  </div>
+                );
+              })}
+            </div>
             <div className="pick-slots">
-              {bpPositions.map((pos, i) => (
-                <div key={pos.role} className="pick-slot">
-                  {picks.red[i] ? (
-                    <HeroMini id={picks.red[i]} />
-                  ) : (
-                    <div className={`slot-empty ${activePick === 'red' && phase === 'pick' ? 'highlight' : ''}`}>
-                      <span className="pos-label">{pos.label}</span>
-                    </div>
-                  )}
-                </div>
-              ))}
+              {bpPositions.map((pos, i) => {
+                const heroId = i < redAllPicks.length ? redAllPicks[i] : null;
+                return (
+                  <div key={pos.role} className="pick-slot">
+                    {heroId ? (
+                      <HeroMini id={heroId} />
+                    ) : (
+                      <div className={'slot-empty ' + (activeSide === 'red' && phase === 'pick' ? 'highlight' : '')}>
+                        <span className="pos-label">{pos.label}</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
       </div>
 
-      {/* 当前操作提示 */}
       {phase !== 'done' && (
         <div className="turn-indicator">
-          <span className={`turn-badge ${activePick}`}>
-            {stepLabel}
-          </span>
+          <span className={'turn-badge ' + activeSide}>{stepLabel}</span>
           <span className="turn-tip">
-            {phase === 'ban' && `禁用 · 蓝方 ${bans.blue.length}/${MAX_BANS} · 红方 ${bans.red.length}/${MAX_BANS}`}
-            {phase === 'pick' && currentStep && (
-              <>
-                第{pickStep + 1}/{PICK_STEPS.length}步 ·
-                蓝方 {picks.blue.length}/{MAX_PICKS} ·
-                红方 {picks.red.length}/{MAX_PICKS}
-                {picks[activePick].length < currentStep.count &&
-                  ` · 还需选${currentStep.count - picks[activePick].length}个`}
-              </>
+            {phase === 'ban' && '禁用 · 蓝' + bans.blue.length + '/' + MAX_BANS + ' · 红' + bans.red.length + '/' + MAX_BANS}
+            {phase === 'pick' && (
+              '蓝' + blueAllPicks.length + '/' + MAX_PICKS + ' · 红' + redAllPicks.length + '/' + MAX_PICKS +
+              (remainInStep > 0 ? ' · 还需选 ' + remainInStep + ' 个' : '')
             )}
           </span>
+        </div>
+      )}
+
+      {phase === 'pick' && (
+        <div className="orch-bar">
+          {ORCH.map((o, i) => {
+            const done = i < orchIdx;
+            const cur = i === orchIdx;
+            const cnt = o.kind === 'blue' ? BLUE_STEPS[o.blueStep].count : RED_STEPS[o.redStep].count;
+            return (
+              <div key={i} className={'orch-step ' + (done ? 'done' : cur ? 'current' : 'pending')}>
+                {o.kind === 'blue' ? '🔵' : '🔴'}{cnt}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -353,11 +402,11 @@ export default function BPPage() {
                 <div className="analysis-detail">
                   <div className="stat-row"><span>阵容评分</span><span className="val">{analysis.blue.total}</span></div>
                   <div className="stat-row"><span>阵容完整度</span><span className="val">{analysis.blue.completeness}/30</span></div>
-                  <div className="stat-row"><span>配合加成</span><span className="val good">+{analysis.blue.synergyCount * 3}</span></div>
-                  <div className="stat-row"><span>被克制风险</span><span className="val bad">-{analysis.blue.weaknessCount * 2}</span></div>
+                  <div className="stat-row"><span>配合加成</span><span className="val good">+{analysis.blue.synergy * 3}</span></div>
+                  <div className="stat-row"><span>被克制风险</span><span className="val bad">-{analysis.blue.weakness * 2}</span></div>
                 </div>
               )}
-              {picks.blue.map(id => <HeroAnalysisCard key={id} heroId={id} side="blue" enemyPicks={[...picks.red]} allPicks={picks.blue} />)}
+              {blueAllPicks.map(id => <HeroAnalysisCard key={id} heroId={id} enemyPicks={redAllPicks} allPicks={blueAllPicks} />)}
             </div>
             <div className="analysis-card red">
               <h3>🔴 红方分析</h3>
@@ -365,42 +414,33 @@ export default function BPPage() {
                 <div className="analysis-detail">
                   <div className="stat-row"><span>阵容评分</span><span className="val">{analysis.red.total}</span></div>
                   <div className="stat-row"><span>阵容完整度</span><span className="val">{analysis.red.completeness}/30</span></div>
-                  <div className="stat-row"><span>配合加成</span><span className="val good">+{analysis.red.synergyCount * 3}</span></div>
-                  <div className="stat-row"><span>被克制风险</span><span className="val bad">-{analysis.red.weaknessCount * 2}</span></div>
+                  <div className="stat-row"><span>配合加成</span><span className="val good">+{analysis.red.synergy * 3}</span></div>
+                  <div className="stat-row"><span>被克制风险</span><span className="val bad">-{analysis.red.weakness * 2}</span></div>
                 </div>
               )}
-              {picks.red.map(id => <HeroAnalysisCard key={id} heroId={id} side="red" enemyPicks={[...picks.blue]} allPicks={picks.red} />)}
+              {redAllPicks.map(id => <HeroAnalysisCard key={id} heroId={id} enemyPicks={blueAllPicks} allPicks={redAllPicks} />)}
             </div>
           </div>
         </div>
       )}
 
-      {/* 英雄选择区 */}
       {phase !== 'done' && (
         <div className="hero-picker">
           <div className="picker-toolbar">
-            <input
-              className="search-input"
-              placeholder="搜索英雄..."
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-            />
+            <input className="search-input" placeholder="搜索英雄..." value={search} onChange={e => setSearch(e.target.value)} />
             <div className="pos-filter">
-              <button className={`filter-btn ${filterPos === 'all' ? 'active' : ''}`} onClick={() => setFilterPos('all')}>全部</button>
-              <button className={`filter-btn ${filterPos === 'tank' || filterPos === 'warrior' ? 'active' : ''}`} onClick={() => setFilterPos('warrior')}>对抗</button>
-              <button className={`filter-btn ${filterPos === 'assassin' ? 'active' : ''}`} onClick={() => setFilterPos('assassin')}>打野</button>
-              <button className={`filter-btn ${filterPos === 'mage' ? 'active' : ''}`} onClick={() => setFilterPos('mage')}>中路</button>
-              <button className={`filter-btn ${filterPos === 'marksman' ? 'active' : ''}`} onClick={() => setFilterPos('marksman')}>射手</button>
-              <button className={`filter-btn ${filterPos === 'support' ? 'active' : ''}`} onClick={() => setFilterPos('support')}>辅助</button>
+              {[['all','全部'],['warrior','对抗'],['assassin','打野'],['mage','中路'],['marksman','射手'],['support','辅助']].map(([v, label]) => (
+                <button key={v} className={'filter-btn ' + (filterPos === v ? 'active' : '')} onClick={() => setFilterPos(v)}>{label}</button>
+              ))}
             </div>
           </div>
           <div className="hero-grid">
             {filteredHeroes.map(hero => (
               <div
                 key={hero.id}
-                className={`hero-card ${tierToClass(hero.tier)}`}
+                className={'hero-card ' + tierToClass(hero.tier)}
                 onClick={() => dispatch({ type: phase === 'ban' ? 'BAN' : 'PICK', heroId: hero.id })}
-                title={`${hero.tier} · ${hero.reason}`}
+                title={hero.tier + ' · ' + hero.reason}
               >
                 <div className="hero-avatar">{hero.name[0]}</div>
                 <div className="hero-info">
@@ -419,17 +459,16 @@ export default function BPPage() {
 }
 
 function HeroMini({ id, isBan = false }: { id: string; isBan?: boolean }) {
-  const hero = getHeroById(id);
-  if (!hero) return null;
+  const hero = id ? getHeroById(id) : null;
   return (
-    <div className={`hero-mini ${isBan ? 'is-ban' : ''}`} title={`${hero.name} ${hero.tier}`}>
-      <span className="mini-name">{hero.name}</span>
+    <div className={'hero-mini ' + (isBan ? 'is-ban' : '')} title={hero ? hero.name + ' ' + hero.tier : ''}>
+      <span className="mini-name">{hero ? hero.name : '-'}</span>
       {isBan && <span className="ban-x">✕</span>}
     </div>
   );
 }
 
-function HeroAnalysisCard({ heroId, enemyPicks, allPicks }: { heroId: string; side?: 'blue' | 'red'; enemyPicks: string[]; allPicks: string[] }) {
+function HeroAnalysisCard({ heroId, enemyPicks, allPicks }: { heroId: string; enemyPicks: string[]; allPicks: string[] }) {
   const hero = getHeroById(heroId);
   if (!hero) return null;
   const counters = enemyPicks.filter(eId => hero.counters.includes(eId));
@@ -443,15 +482,9 @@ function HeroAnalysisCard({ heroId, enemyPicks, allPicks }: { heroId: string; si
         <span className="ah-score">强度 {hero.tierScore}</span>
       </div>
       <div className="ah-reason">{hero.reason}</div>
-      {counters.length > 0 && (
-        <div className="ah-counters">✅ 克制：{counters.map(id => getHeroById(id)?.name).join('、')}</div>
-      )}
-      {counteredBy.length > 0 && (
-        <div className="ah-countered">⚠️ 被克：{counteredBy.map(id => getHeroById(id)?.name).join('、')}</div>
-      )}
-      {synergies.length > 0 && (
-        <div className="ah-synergy">🤝 配合：{synergies.map(id => getHeroById(id)?.name).join('、')}</div>
-      )}
+      {counters.length > 0 && <div className="ah-counters">✅ 克制：{counters.map(id => getHeroById(id)?.name).join('、')}</div>}
+      {counteredBy.length > 0 && <div className="ah-countered">⚠️ 被克：{counteredBy.map(id => getHeroById(id)?.name).join('、')}</div>}
+      {synergies.length > 0 && <div className="ah-synergy">🤝 配合：{synergies.map(id => getHeroById(id)?.name).join('、')}</div>}
     </div>
   );
 }
