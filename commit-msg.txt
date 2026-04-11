@@ -1,1 +1,1 @@
-fix BP: ban2 condition and 5 ban slots
+update BP flow: single ban round (5 each) + single pick round (blue1 red2 blue2 red2 blue2 red1)

@@ -6,18 +6,16 @@ function tierToClass(tier: string) {
 }
 
 type Side = 'blue' | 'red';
-type Phase = 'ban1' | 'pick1' | 'ban2' | 'pick2' | 'done';
+type Phase = 'ban' | 'pick' | 'done';
 
 const PHASES: { key: Phase; label: string }[] = [
-  { key: 'ban1', label: '第一轮Ban' },
-  { key: 'pick1', label: '第一轮Pick' },
-  { key: 'ban2', label: '第二轮Ban' },
-  { key: 'pick2', label: '第二轮Pick' },
+  { key: 'ban', label: '禁用阶段' },
+  { key: 'pick', label: '选择阶段' },
   { key: 'done', label: '阵容分析' },
 ];
 
 export default function BPPage() {
-  const [phase, setPhase] = useState<Phase>('ban1');
+  const [phase, setPhase] = useState<Phase>('ban');
   const [bans, setBans] = useState<{ blue: string[]; red: string[] }>({ blue: [], red: [] });
   const [picks, setPicks] = useState<{ blue: string[]; red: string[] }>({ blue: [], red: [] });
   const [search, setSearch] = useState('');
@@ -26,11 +24,11 @@ export default function BPPage() {
 
   const takenIds = useMemo(() => {
     const picksTaken = [...picks.blue, ...picks.red];
-    // 当前操作方的ban不排除（允许双方重复ban），己方pick排除
-    if (phase === 'ban1' || phase === 'ban2') {
+    // Ban阶段：只排除双方已pick的，不排除己方ban（允许双方重复ban）
+    if (phase === 'ban') {
       return picksTaken;
     }
-    // pick阶段：双方ban和pick都排除
+    // Pick阶段：排除所有已ban和已pick的
     return [...picksTaken, ...bans.blue, ...bans.red];
   }, [bans, picks, phase]);
 
@@ -46,13 +44,12 @@ export default function BPPage() {
   const handleSelectHero = (hero: Hero) => {
     if (phase === 'done') return;
 
-    if (phase === 'ban1' || phase === 'ban2') {
+    if (phase === 'ban') {
       const side = activePick;
-      const maxBans = phase === 'ban1' ? 3 : 5;
-      if (bans[side].length >= maxBans) return;
+      if (bans[side].length >= 5) return;
       setBans(prev => ({ ...prev, [side]: [...prev[side], hero.id] }));
       advanceTurn();
-    } else {
+    } else if (phase === 'pick') {
       const side = activePick;
       if (picks[side].length >= 5) return;
       setPicks(prev => ({ ...prev, [side]: [...prev[side], hero.id] }));
@@ -60,36 +57,26 @@ export default function BPPage() {
     }
   };
 
-  const currentPickSlot = () => {
-    const pickCount = picks[activePick].length;
-    const slots = ['top', 'jg', 'mid', 'adc', 'sup'];
-    return slots[pickCount] || 'mid';
-  };
-
+  // Pick顺序：蓝1→红2→蓝2→红2→蓝2→红1（双方各5）
   const advanceTurn = () => {
     const nextSide: Side = activePick === 'blue' ? 'red' : 'blue';
 
-    if (phase === 'ban1') {
-      if (bans.blue.length === 3 && bans.red.length === 3) {
-        setPhase('pick1');
-      } else {
-        setActivePick(nextSide);
-      }
-    } else if (phase === 'pick1') {
-      if (picks.blue.length === 3 && picks.red.length === 3) {
-        setPhase('ban2');
-      } else {
-        setActivePick(nextSide);
-      }
-    } else if (phase === 'ban2') {
+    if (phase === 'ban') {
       if (bans.blue.length === 5 && bans.red.length === 5) {
-        setPhase('pick2');
+        setPhase('pick');
+        setActivePick('blue');
       } else {
         setActivePick(nextSide);
       }
-    } else if (phase === 'pick2') {
-      if (picks.blue.length === 5 && picks.red.length === 5) {
-        setPhase('done');
+    } else if (phase === 'pick') {
+      // 蓝方已满5个 → 红方继续直到5
+      // 红方已满5个 → 完成
+      if (picks.blue.length === 5) {
+        if (picks.red.length === 5) {
+          setPhase('done');
+        } else {
+          setActivePick('red');
+        }
       } else {
         setActivePick(nextSide);
       }
@@ -97,7 +84,7 @@ export default function BPPage() {
   };
 
   const reset = () => {
-    setPhase('ban1');
+    setPhase('ban');
     setBans({ blue: [], red: [] });
     setPicks({ blue: [], red: [] });
     setSearch('');
@@ -204,7 +191,7 @@ export default function BPPage() {
                   {picks.blue[i] ? (
                     <HeroMini id={picks.blue[i]} />
                   ) : (
-                    <div className={`slot-empty ${currentPickSlot() === pos.role && activePick === 'blue' && phase === 'pick1' || (phase === 'pick2' && activePick === 'blue') ? 'highlight' : ''}`}>
+                    <div className={`slot-empty ${activePick === 'blue' && phase === 'pick' ? 'highlight' : ''}`}>
                       <span className="pos-label">{pos.label}</span>
                     </div>
                   )}
@@ -261,7 +248,7 @@ export default function BPPage() {
                   {picks.red[i] ? (
                     <HeroMini id={picks.red[i]} />
                   ) : (
-                    <div className={`slot-empty ${currentPickSlot() === pos.role && activePick === 'red' && phase === 'pick1' || (phase === 'pick2' && activePick === 'red') ? 'highlight' : ''}`}>
+                    <div className={`slot-empty ${activePick === 'red' && phase === 'pick' ? 'highlight' : ''}`}>
                       <span className="pos-label">{pos.label}</span>
                     </div>
                   )}
@@ -277,13 +264,11 @@ export default function BPPage() {
         <div className="turn-indicator">
           <span className={`turn-badge ${activePick}`}>
             {activePick === 'blue' ? '🔵' : '🔴'} {activePick === 'blue' ? '蓝方' : '红方'}
-            {phase === 'ban1' || phase === 'ban2' ? ' 禁用' : ' 选择'}
+            {phase === 'ban' ? ' 禁用' : ' 选择'}
           </span>
           <span className="turn-tip">
-            {phase === 'ban1' && `第 ${bans[activePick].length + 1} 个 Ban · 蓝方 ${bans.blue.length}/3 · 红方 ${bans.red.length}/3`}
-            {phase === 'pick1' && `第 ${picks[activePick].length + 1} 个 Pick`}
-            {phase === 'ban2' && `第 ${bans[activePick].length - 3 + 1} 个 Ban · 蓝方 ${bans.blue.length - 3}/1 · 红方 ${bans.red.length - 3}/1`}
-            {phase === 'pick2' && `第 ${picks[activePick].length - 3 + 1} 个 Pick`}
+            {phase === 'ban' && `禁用 · 蓝方 ${bans.blue.length}/5 · 红方 ${bans.red.length}/5`}
+            {phase === 'pick' && `选择 · 蓝方 ${picks.blue.length}/5 · 红方 ${picks.red.length}/5`}
           </span>
         </div>
       )}
