@@ -76,21 +76,22 @@ export default function BPPage() {
     } else if (phase === 'pick') {
       const step = PICK_STEPS[pickStep];
       const side = step.side;
-      if (picks[side].length >= step.count) return;
-      const nextSidePicks = [...picks[side], hero.id];
-      setPicks(prev => ({ ...prev, [side]: nextSidePicks }));
-      // 该步骤选够了吗
-      if (nextSidePicks.length < step.count) {
-        // 同一步骤继续选
-      } else {
-        // 进入下一步
+      setPicks(prev => {
+        // 已经在这一步骤选够了
+        if (prev[side].length >= step.count) return prev;
+        const nextSidePicks = [...prev[side], hero.id];
+        const newPicks = { ...prev, [side]: nextSidePicks };
+        // 该步骤还没选够，留在这一步
+        if (nextSidePicks.length < step.count) return newPicks;
+        // 选够了，进入下一步或结束
         const nextStep = pickStep + 1;
         if (nextStep >= PICK_STEPS.length) {
           setPhase('done');
         } else {
           setPickStep(nextStep);
         }
-      }
+        return newPicks;
+      });
     }
   };
 
