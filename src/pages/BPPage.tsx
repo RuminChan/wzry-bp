@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { heroes, getHeroById, bpPositions, tierColors, type Hero } from '../data/heroes';
 
 function tierToClass(tier: string) {
@@ -37,6 +37,8 @@ export default function BPPage() {
 
   // 每方最多选5个（所有pick步骤加起来）
   const MAX_PICKS = 5;
+  // 防止同帧重复点击
+  const isSelecting = useRef(false);
 
   const activePick = phase === 'pick' ? PICK_STEPS[pickStep].side : banTurn;
 
@@ -61,7 +63,10 @@ export default function BPPage() {
 
   const handleSelectHero = (hero: Hero) => {
     if (phase === 'done') return;
-
+    if (isSelecting.current) return;
+    isSelecting.current = true;
+    // 执行后重置（try/finally确保在React状态更新+渲染后释放）
+    try {
     if (phase === 'ban') {
       const side = banTurn;
       if (bans[side].length >= 5) return;
@@ -97,6 +102,10 @@ export default function BPPage() {
         }
         return newPicks;
       });
+    }
+    } finally {
+      // 状态更新触发渲染后，重置锁，允许下一次点击
+      Promise.resolve().then(() => { isSelecting.current = false; });
     }
   };
 
