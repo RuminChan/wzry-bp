@@ -24,7 +24,15 @@ export default function BPPage() {
   const [filterPos, setFilterPos] = useState<string>('all');
   const [activePick, setActivePick] = useState<Side>('blue');
 
-  const takenIds = [...bans.blue, ...bans.red, ...picks.blue, ...picks.red];
+  const takenIds = useMemo(() => {
+    const picksTaken = [...picks.blue, ...picks.red];
+    // 当前操作方的ban不排除（允许双方重复ban），己方pick排除
+    if (phase === 'ban1' || phase === 'ban2') {
+      return picksTaken;
+    }
+    // pick阶段：双方ban和pick都排除
+    return [...picksTaken, ...bans.blue, ...bans.red];
+  }, [bans, picks, phase]);
 
   const filteredHeroes = useMemo(() => {
     return heroes.filter(h => {
@@ -40,7 +48,8 @@ export default function BPPage() {
 
     if (phase === 'ban1' || phase === 'ban2') {
       const side = activePick;
-      if (bans[side].length >= 3) return;
+      const maxBans = phase === 'ban1' ? 3 : 5;
+      if (bans[side].length >= maxBans) return;
       setBans(prev => ({ ...prev, [side]: [...prev[side], hero.id] }));
       advanceTurn();
     } else {
