@@ -1,5 +1,5 @@
 import { useReducer, useMemo, useState } from 'react';
-import { heroes, getHeroById, bpPositions, tierColors, type Hero } from '../data/heroes';
+import { heroes, getHeroById, bpPositions, tierColors, type Hero, type Position } from '../data/heroes';
 
 type Side = 'blue' | 'red';
 type Phase = 'ban' | 'pick' | 'done';
@@ -254,15 +254,39 @@ export default function BPPage() {
         h.synergies.forEach(sid => { if (picks.includes(sid)) synergy++; });
       });
       const roles = new Set<string>();
+      const roleCount: Record<string, number> = { tank: 0, mage: 0, marksman: 0, assassin: 0, support: 0, warrior: 0 };
       objs.forEach(h => {
-        if (h.position.includes('warrior') || h.position.includes('tank')) roles.add('tank');
-        if (h.position.includes('mage')) roles.add('mage');
-        if (h.position.includes('marksman')) roles.add('marksman');
-        if (h.position.includes('assassin')) roles.add('assassin');
-        if (h.position.includes('support')) roles.add('support');
+        if (h.position.includes('warrior') || h.position.includes('tank')) { roles.add('tank'); roleCount.tank++; roleCount.warrior++; }
+        if (h.position.includes('mage')) { roles.add('mage'); roleCount.mage++; }
+        if (h.position.includes('marksman')) { roles.add('marksman'); roleCount.marksman++; }
+        if (h.position.includes('assassin')) { roles.add('assassin'); roleCount.assassin++; }
+        if (h.position.includes('support')) { roles.add('support'); roleCount.support++; }
       });
       const completeness = Math.min(roles.size / 4 * 30, 30);
-      return { total: Math.round(score + synergy * 3 - weakness * 2 + completeness), synergy, weakness, completeness: Math.round(completeness) };
+
+      // 阵容合理性检测
+      const issues: string[] = [];
+      const mageCount = roleCount.mage;
+      const mmCount = roleCount.marksman;
+      const tankCount = roleCount.tank + roleCount.warrior;
+      const supCount = roleCount.support;
+      const jgCount = roleCount.assassin;
+
+      if (mageCount >= 5) issues.push('⚠️ 全法师阵容，缺少物理伤害');
+      else if (mageCount === 4 && mmCount === 0) issues.push('⚠️ 4法师无射手，阵容偏科严重');
+      else if (mageCount >= 4 && mmCount >= 1) issues.push('⚡ 中射双法，需平衡物理输出');
+
+      if (mmCount >= 5) issues.push('⚠️ 全射手阵容，前排坦度严重不足');
+      else if (mmCount >= 3 && tankCount === 0) issues.push('⚠️ 多射手无前排，团战生存困难');
+      else if (mmCount >= 3 && tankCount >= 1) issues.push('⚡ 多射手阵容，需保护后排');
+
+      if (tankCount === 0 && picks.length >= 3) issues.push('⚠️ 无前排战士，阵容坦度不足');
+      if (supCount === 0 && picks.length >= 4) issues.push('⚠️ 无辅助位视野和保护');
+      if (jgCount === 0 && picks.length >= 3) issues.push('⚠️ 无打野位，前期节奏能力弱');
+      if (mageCount === 0 && mmCount === 0) issues.push('⚠️ 无法师无射手，远程输出缺失');
+      if (tankCount >= 3 && mageCount + mmCount <= 1) issues.push('⚡ 多前排阵容，输出核心明确');
+
+      return { total: Math.round(score + synergy * 3 - weakness * 2 + completeness), synergy, weakness, completeness: Math.round(completeness), issues };
     };
     return { blue: calc(blueAllPicks), red: calc(redAllPicks) };
   }, [blueAllPicks, redAllPicks]);
@@ -397,6 +421,10 @@ export default function BPPage() {
         </div>
       )}
 
+      {phase === 'pick' && activeSide && (
+        <PickAdvicePanel bluePicks={blueAllPicks} redPicks={redAllPicks} activeSide={activeSide} onSelect={heroId => dispatch({ type: 'PICK', heroId })} />
+      )}
+
       {phase === 'done' && (
         <div className="done-panel">
           <div className="analysis-summary">
@@ -408,6 +436,12 @@ export default function BPPage() {
                   <div className="stat-row"><span>阵容完整度</span><span className="val">{analysis.blue.completeness}/30</span></div>
                   <div className="stat-row"><span>配合加成</span><span className="val good">+{analysis.blue.synergy * 3}</span></div>
                   <div className="stat-row"><span>被克制风险</span><span className="val bad">-{analysis.blue.weakness * 2}</span></div>
+                  {analysis.blue.issues.map((issue, i) => (
+                    <div key={i} className="stat-row"><span></span><span className="val bad" style={{ fontSize: 12 }}>{issue}</span></div>
+                  ))}
+                  {analysis.blue.issues.length === 0 && blueAllPicks.length >= 5 && (
+                    <div className="stat-row"><span></span><span className="val good" style={{ fontSize: 12 }}>✅ 阵容合理</span></div>
+                  )}
                 </div>
               )}
               {blueAllPicks.map(id => <HeroAnalysisCard key={id} heroId={id} enemyPicks={redAllPicks} allPicks={blueAllPicks} />)}
@@ -420,6 +454,12 @@ export default function BPPage() {
                   <div className="stat-row"><span>阵容完整度</span><span className="val">{analysis.red.completeness}/30</span></div>
                   <div className="stat-row"><span>配合加成</span><span className="val good">+{analysis.red.synergy * 3}</span></div>
                   <div className="stat-row"><span>被克制风险</span><span className="val bad">-{analysis.red.weakness * 2}</span></div>
+                  {analysis.red.issues.map((issue, i) => (
+                    <div key={i} className="stat-row"><span></span><span className="val bad" style={{ fontSize: 12 }}>{issue}</span></div>
+                  ))}
+                  {analysis.red.issues.length === 0 && redAllPicks.length >= 5 && (
+                    <div className="stat-row"><span></span><span className="val good" style={{ fontSize: 12 }}>✅ 阵容合理</span></div>
+                  )}
                 </div>
               )}
               {redAllPicks.map(id => <HeroAnalysisCard key={id} heroId={id} enemyPicks={blueAllPicks} allPicks={redAllPicks} />)}
@@ -489,6 +529,86 @@ function HeroAnalysisCard({ heroId, enemyPicks, allPicks }: { heroId: string; en
       {counters.length > 0 && <div className="ah-counters">✅ 克制：{counters.map(id => getHeroById(id)?.name).join('、')}</div>}
       {counteredBy.length > 0 && <div className="ah-countered">⚠️ 被克：{counteredBy.map(id => getHeroById(id)?.name).join('、')}</div>}
       {synergies.length > 0 && <div className="ah-synergy">🤝 配合：{synergies.map(id => getHeroById(id)?.name).join('、')}</div>}
+    </div>
+  );
+}
+
+function PickAdvicePanel({ bluePicks, redPicks, activeSide, onSelect }: { bluePicks: string[]; redPicks: string[]; activeSide: Side; onSelect: (heroId: string) => void }) {
+  const allPicks = activeSide === 'blue' ? bluePicks : redPicks;
+  const enemyPicks = activeSide === 'blue' ? redPicks : bluePicks;
+
+  const picksObj = allPicks.map(id => getHeroById(id)).filter(Boolean) as Hero[];
+  const enemyObjs = enemyPicks.map(id => getHeroById(id)).filter(Boolean) as Hero[];
+
+  // 统计已有位置
+  const hasPos: Record<string, boolean> = { tank: false, warrior: false, mage: false, marksman: false, assassin: false, support: false };
+  picksObj.forEach(h => {
+    if (h.position.includes('tank')) hasPos.tank = true;
+    if (h.position.includes('warrior')) hasPos.warrior = true;
+    if (h.position.includes('mage')) hasPos.mage = true;
+    if (h.position.includes('marksman')) hasPos.marksman = true;
+    if (h.position.includes('assassin')) hasPos.assassin = true;
+    if (h.position.includes('support')) hasPos.support = true;
+  });
+
+  const missingRoles = (Object.keys(hasPos) as Position[]).filter(k => !hasPos[k]);
+
+  // 阵容问题提示
+  const roleCount: Record<string, number> = { tank: 0, warrior: 0, mage: 0, marksman: 0, assassin: 0, support: 0 };
+  picksObj.forEach(h => {
+    if (h.position.includes('tank') || h.position.includes('warrior')) roleCount.tank++;
+    if (h.position.includes('mage')) roleCount.mage++;
+    if (h.position.includes('marksman')) roleCount.marksman++;
+    if (h.position.includes('assassin')) roleCount.assassin++;
+    if (h.position.includes('support')) roleCount.support++;
+  });
+
+  const issues: string[] = [];
+  if (roleCount.mage >= 4) issues.push('⚠️ 法师过多');
+  if (roleCount.marksman >= 3) issues.push('⚠️ 射手过多');
+  if (roleCount.tank === 0 && allPicks.length >= 2) issues.push('⚠️ 缺少前排');
+
+  // 找推荐英雄：优先补缺失位置，避开被敌方克制的
+  const already = [...allPicks, ...enemyPicks];
+  const suggestions = heroes
+    .filter(h => !already.includes(h.id))
+    .filter(h => !enemyObjs.some(e => e.counters.includes(h.id) && h.counteredBy.includes(e.id)))
+    .sort((a, b) => {
+      const aMatch = missingRoles.some(r => a.position.includes(r)) ? 10 : 0;
+      const bMatch = missingRoles.some(r => b.position.includes(r)) ? 10 : 0;
+      const aCountered = enemyObjs.some(e => e.counters.includes(a.id)) ? -5 : 0;
+      const bCountered = enemyObjs.some(e => e.counters.includes(b.id)) ? -5 : 0;
+      const aSynergy = a.synergies.some(sid => allPicks.includes(sid)) ? 3 : 0;
+      const bSynergy = b.synergies.some(sid => allPicks.includes(sid)) ? 3 : 0;
+      return (b.tierScore + bMatch + bSynergy + bCountered) - (a.tierScore + aMatch + aSynergy + aCountered);
+    })
+    .slice(0, 6);
+
+  const posLabels: Record<string, string> = { tank: '前排', warrior: '前排', mage: '中单', marksman: '射手', assassin: '打野', support: '游走' };
+
+  return (
+    <div className="pick-advice-panel">
+      <div className="advice-header">
+        <span className="advice-title">💡 {activeSide === 'blue' ? '蓝方' : '红方'}选人建议</span>
+        {issues.length > 0 && <span className="advice-warn">{issues.join(' ')}</span>}
+        {issues.length === 0 && allPicks.length > 0 && <span className="advice-ok">阵容暂无明显问题</span>}
+      </div>
+      {missingRoles.length > 0 && (
+        <div className="advice-tip">
+          建议补充：{missingRoles.map(r => posLabels[r] || r).join('、')}
+        </div>
+      )}
+      {suggestions.length > 0 && (
+        <div className="advice-heroes">
+          {suggestions.map(h => (
+            <div key={h.id} className={'advice-hero ' + (missingRoles.some(r => h.position.includes(r)) ? 'advice-fill' : '')} onClick={() => onSelect(h.id)}>
+              <span className="advice-name">{h.name}</span>
+              <span className="advice-tier" style={{ color: tierColors[h.tier] }}>{h.tier}</span>
+              <span className="advice-pos">{h.position.map(p => p[0].toUpperCase()).join('/')}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
