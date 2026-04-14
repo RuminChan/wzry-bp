@@ -304,17 +304,6 @@ export default function BPPage() {
             </div>
           </div>
           <div className="pick-zone">
-            <div className="step-indicator">
-              {BLUE_STEPS.map((cnt, i) => {
-                const done = blueHistory[i].length > 0;
-                const cur = currentOrch?.kind === 'blue' && currentOrch.blueStep === i;
-                return (
-                  <div key={i} className={'step-badge ' + (done ? 'done' : cur ? 'current' : 'pending')}>
-                    第{i+1}步({cnt}个){done ? '✓' : cur ? '▶' : ''}
-                  </div>
-                );
-              })}
-            </div>
             <div className="pick-slots">
               {bpPositions.map((pos, i) => {
                 const heroId = blueAllPicks[i] ?? null;
@@ -363,17 +352,6 @@ export default function BPPage() {
             </div>
           </div>
           <div className="pick-zone">
-            <div className="step-indicator">
-              {RED_STEPS.map((cnt, i) => {
-                const done = redHistory[i].length > 0;
-                const cur = currentOrch?.kind === 'red' && currentOrch.redStep === i;
-                return (
-                  <div key={i} className={'step-badge ' + (done ? 'done' : cur ? 'current' : 'pending')}>
-                    第{i+1}步({cnt}个){done ? '✓' : cur ? '▶' : ''}
-                  </div>
-                );
-              })}
-            </div>
             <div className="pick-slots">
               {bpPositions.map((pos, i) => {
                 const heroId = redAllPicks[i] ?? null;
