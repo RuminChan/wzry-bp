@@ -330,6 +330,7 @@ export default function BPPage() {
           <div className="pick-zone">
             <div className="pick-slots">
               {bpPositions.map((pos, i) => {
+                // pick阶段：按选人顺序1~5楼；done阶段：按固定位置
                 const heroId = blueAllPicks[i] ?? null;
                 return (
                   <div key={pos.role} className="pick-slot">
@@ -337,7 +338,7 @@ export default function BPPage() {
                       <HeroMini id={heroId} />
                     ) : (
                       <div className={'slot-empty ' + (activeSide === 'blue' && phase === 'pick' ? 'highlight' : '')}>
-                        <span className="pos-label">{pos.label}</span>
+                        <span className="pos-label">{phase === 'done' ? pos.label : ['', '一楼', '二楼', '三楼', '四楼', '五楼'][i + 1]}</span>
                       </div>
                     )}
                   </div>
@@ -385,7 +386,7 @@ export default function BPPage() {
                       <HeroMini id={heroId} />
                     ) : (
                       <div className={'slot-empty ' + (activeSide === 'red' && phase === 'pick' ? 'highlight' : '')}>
-                        <span className="pos-label">{pos.label}</span>
+                        <span className="pos-label">{phase === 'done' ? pos.label : ['', '一楼', '二楼', '三楼', '四楼', '五楼'][i + 1]}</span>
                       </div>
                     )}
                   </div>
