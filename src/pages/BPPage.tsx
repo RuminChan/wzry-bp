@@ -299,7 +299,7 @@ export default function BPPage() {
 
       <div className="bp-layout">
         {/* 左侧：蓝方 */}
-        <div className="side-panel blue-side">
+        <div className={'side-panel blue-side' + (activeSide === 'blue' && phase !== 'done' ? ' active-side' : '')}>
           <div className="side-header">
             <span className="side-name">🔵 蓝方</span>
             {analysis && <span className="side-score">{analysis.blue.total}分</span>}
@@ -421,7 +421,7 @@ export default function BPPage() {
         </div>
 
         {/* 右侧：红方 */}
-        <div className="side-panel red-side">
+        <div className={'side-panel red-side' + (activeSide === 'red' && phase !== 'done' ? ' active-side' : '')}>
           <div className="side-header">
             <span className="side-name">🔴 红方</span>
             {analysis && <span className="side-score">{analysis.red.total}分</span>}
